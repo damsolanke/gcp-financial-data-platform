@@ -1,250 +1,272 @@
 # GCP Financial Data Platform
 
-Production-grade financial data infrastructure platform on GCP demonstrating data pipelines, governance, storage reliability, and access control at scale.
+[![CI](https://github.com/damsolanke/gcp-financial-data-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/damsolanke/gcp-financial-data-platform/actions/workflows/ci.yml)
+
+Production-grade financial data infrastructure on GCP. Five integrated modules — Go ingestion, Airflow orchestration, dbt transforms, Python governance, Terraform IaC — unified by a single shared schema contract.
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph Sources["Event Sources"]
-        B[Billing System]
-        U[Usage Tracking]
-        C[Cost Allocation]
+flowchart TB
+    subgraph Contract["Shared Schema Contract"]
+        direction LR
+        S1["schemas/revenue_transaction.json"]
+        S2["schemas/usage_metric.json"]
+        S3["schemas/cost_record.json"]
     end
 
-    subgraph WritePathBox["Write Path (Go)"]
-        IS["Ingestion Service\n(Go / chi)"]
-        V["JSON Schema\nValidation"]
+    subgraph Write["Write Path · Go · <100ms"]
+        IS["Ingestion Service\nHTTP/JSON → validate → fan-out"]
     end
 
-    subgraph Streaming["Event Streaming"]
-        PS_V["Pub/Sub\nValidated Topic"]
-        PS_DLQ["Pub/Sub\nDead Letter Queue"]
+    subgraph Stream["Event Backbone"]
+        PS["Pub/Sub\n(exactly-once, 7d retention)"]
+        DLQ["Dead Letter Queue\n(30d retention)"]
     end
 
-    subgraph HotPath["Hot Path"]
-        BT["BigTable\n(Real-Time Queries)"]
+    subgraph Hot["Hot Path"]
+        BT["BigTable\n(reverse-timestamp keys\n90d TTL)"]
     end
 
-    subgraph BatchPathBox["Batch Path (Airflow / dbt)"]
-        AF["Cloud Composer\n(Airflow)"]
-        STG["BigQuery\nStaging"]
-        DBT["dbt\nTransformations"]
-        INT["Intermediate\nModels"]
-        MARTS["BigQuery\nMarts"]
-        AD["Anomaly\nDetection"]
+    subgraph Batch["Batch Path · Airflow + dbt · daily 02:00 UTC"]
+        AF["Cloud Composer"] --> STG["Staging\n(views)"]
+        STG --> INT["Intermediate\n(ephemeral CTEs)"]
+        INT --> MARTS["Marts\n(partitioned + clustered tables)"]
+        AF --> ANOM["Anomaly Detection\n(2σ rolling 30d)"]
     end
 
-    subgraph ReadPathBox["Read Path (Governance)"]
-        GOV["Governance Service\n(FastAPI)"]
-        RBAC["RBAC Engine"]
-        AUDIT["Audit Logs\n(BigQuery)"]
+    subgraph Read["Read Path · FastAPI · <50ms"]
+        GOV["Governance Service"]
+        RBAC["RBAC\n(5 roles, glob patterns)"]
+        AUD["Audit Log\n(7yr retention, SOX)"]
     end
 
-    subgraph Storage["Durable Storage"]
-        GCS_RAW["GCS Raw Bucket\n(Multi-Region US)"]
-        GCS_BAK["GCS Backup Bucket\n(Cross-Region)"]
+    subgraph Infra["Storage + DR"]
+        GCS1["GCS Raw\n(US multi-region)"]
+        GCS2["GCS Backup\n(cross-region, lifecycle tiering)"]
+        SNAP["BQ Snapshots\n(daily, 30d)"]
     end
 
-    B & U & C -->|POST /api/v1/events| IS
-    IS --> V
-    V -->|Valid| PS_V
-    V -->|Invalid| PS_DLQ
-    IS -->|Dual write| BT
+    Contract -.->|go:embed| IS
+    Contract -.->|Pub/Sub schema| PS
+    Contract -.->|dbt tests| MARTS
 
-    PS_V -->|Daily pull\n02:00 UTC| AF
-    AF --> STG
-    STG --> DBT
-    DBT --> INT --> MARTS
-
-    AF --> AD
+    IS -->|valid events| PS
+    IS -->|invalid| DLQ
+    IS -->|best-effort dual write| BT
+    PS -->|daily batch pull| AF
     MARTS --> GOV
     GOV --> RBAC
-    GOV --> AUDIT
+    GOV --> AUD
+    IS --> GCS1
+    GCS1 -->|Storage Transfer 03:00 UTC| GCS2
+    MARTS --> SNAP
 
-    IS -->|Raw files| GCS_RAW
-    GCS_RAW -->|Daily 03:00 UTC\nStorage Transfer| GCS_BAK
-
-    style WritePathBox fill:#e8f5e9,stroke:#388e3c
-    style BatchPathBox fill:#e3f2fd,stroke:#1976d2
-    style ReadPathBox fill:#fff3e0,stroke:#f57c00
-    style HotPath fill:#fce4ec,stroke:#c62828
-    style Storage fill:#f3e5f5,stroke:#7b1fa2
+    style Contract fill:#fffde7,stroke:#f9a825,stroke-width:2px
+    style Write fill:#e8f5e9,stroke:#388e3c
+    style Batch fill:#e3f2fd,stroke:#1976d2
+    style Read fill:#fff3e0,stroke:#f57c00
+    style Hot fill:#fce4ec,stroke:#c62828
+    style Infra fill:#f3e5f5,stroke:#7b1fa2
 ```
 
-**Three distinct data paths:**
+### Data Paths
 
-| Path | Technology | Latency | Purpose |
-|------|-----------|---------|---------|
-| **Write** | Go + Pub/Sub + BigTable | <100ms | Real-time event ingestion and validation |
-| **Batch** | Airflow + dbt + BigQuery | <30min | Daily transformations and reporting |
-| **Read** | FastAPI + RBAC + Audit | <50ms | Access-controlled queries with full audit trail |
+| Path | Stack | Latency | What it does |
+|------|-------|---------|-------------|
+| **Write** | Go, Pub/Sub, BigTable | <100ms | Validates events against shared JSON Schema, publishes to Pub/Sub, dual-writes to BigTable. Invalid events go to DLQ. BigTable writes are best-effort — Pub/Sub is the durable backbone. |
+| **Batch** | Airflow, dbt, BigQuery | <30min | Daily MERGE into staging (dedup by event ID), three-layer dbt transforms, anomaly detection (2σ from 30-day rolling average), financial report materialization. |
+| **Read** | FastAPI, RBAC, BigQuery | <50ms | Glob-pattern RBAC (`marts_finance.*`), every access check logged to audit table, IAM sync generates Terraform HCL for BigQuery dataset bindings. |
 
-## Tech Stack
+### dbt Lineage
 
-| Technology | Purpose | Module |
-|------------|---------|--------|
-| Go | Event ingestion service | A |
-| Python / FastAPI | Governance and access control | D |
-| BigQuery | Data warehouse, analytics | B, C, D |
-| BigTable | Hot-path low-latency store | A |
-| Pub/Sub | Event streaming backbone | A, B |
-| Airflow (Cloud Composer) | Pipeline orchestration | B |
-| dbt | SQL transformations and testing | C |
-| Terraform | Infrastructure-as-Code | E |
-| GCS | Object storage, backup | E |
-| GKE | Container orchestration | E |
-| Prometheus | Metrics and monitoring | A |
-| Docker | Containerization | All |
-| GitHub Actions | CI/CD | All |
+```mermaid
+flowchart LR
+    subgraph Sources
+        R[revenue_transactions]
+        U[usage_metrics]
+        C[cost_records]
+    end
+
+    subgraph Staging["Staging (views)"]
+        SR[stg_revenue_transactions]
+        SU[stg_usage_metrics]
+        SC[stg_cost_records]
+    end
+
+    subgraph Intermediate["Intermediate (ephemeral)"]
+        IDR[int_daily_revenue]
+        ICU[int_customer_usage_aggregated]
+        ICC[int_cost_by_center]
+    end
+
+    subgraph Marts["Finance Marts"]
+        FDR[fct_daily_revenue_summary]
+        FMC[fct_monthly_cost_attribution]
+        FRP[fct_revenue_by_product_region]
+    end
+
+    subgraph Analytics["Analytics Marts"]
+        FCU[fct_customer_usage_report]
+        FUE[fct_unit_economics]
+    end
+
+    R --> SR --> IDR --> FDR & FRP
+    U --> SU --> ICU --> FCU & FUE
+    C --> SC --> ICC --> FMC
+    IDR --> FUE
+
+    style Staging fill:#e8f5e9,stroke:#388e3c
+    style Intermediate fill:#fff3e0,stroke:#f57c00
+    style Marts fill:#e3f2fd,stroke:#1976d2
+    style Analytics fill:#f3e5f5,stroke:#7b1fa2
+```
+
+## What Ties It Together
+
+One JSON Schema file defines each event type. That schema propagates everywhere:
+
+| Consumer | How it uses the schema |
+|----------|----------------------|
+| **Go ingestion** | `go:embed` compiles schemas into the binary — no runtime file reads, versioned with the code |
+| **Pub/Sub** | Schema validation at the topic level rejects malformed messages before they enter the pipeline |
+| **dbt tests** | Field names, types, and constraints reference the same definitions |
+| **Data generator** | Reads `schemas/` to know valid enum values — never hardcodes schema knowledge |
+
+Change a field once in `schemas/`, and you know exactly what breaks across all five modules.
+
+## Performance
+
+```
+BenchmarkValidation/revenue_transaction     280,000 validations/sec    3,567 ns/op
+BenchmarkValidation/usage_metric            295,000 validations/sec    3,389 ns/op
+BenchmarkValidation/cost_record             310,000 validations/sec    3,225 ns/op
+```
+
+Target was 10K events/sec. Actual throughput is 28x that.
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/adesolanke/gcp-financial-data-platform.git
+git clone https://github.com/damsolanke/gcp-financial-data-platform.git
 cd gcp-financial-data-platform
-make up            # Start all services with docker-compose
-make generate      # Generate sample financial data
-curl localhost:8080/api/v1/events -d @data/sample_event.json  # Ingest an event
-curl localhost:8081/api/v1/access/check/analyst-001/marts_finance.fct_daily_revenue_summary  # Check access
+make up             # Start all services (emulators, Airflow, ingestion, governance)
+make generate       # Generate 600K+ sample events over 90 days
 ```
 
-**Local services after `make up`:**
+```bash
+# Ingest a revenue event
+curl -X POST localhost:8080/api/v1/events?type=revenue_transaction \
+  -H "Content-Type: application/json" \
+  -d '{"transaction_id":"550e8400-e29b-41d4-a716-446655440000","timestamp":"2025-01-15T10:30:00Z","amount_cents":1500,"currency":"USD","customer_id":"cust-12345","product_line":"api_usage","region":"us-east"}'
+
+# Check access
+curl localhost:8081/api/v1/access/check/analyst-001/marts_finance.fct_daily_revenue_summary
+```
 
 | Service | URL | Description |
 |---------|-----|-------------|
-| Ingestion Service | `localhost:8080` | Go event ingestion API |
-| Governance Service | `localhost:8081` | FastAPI access control and audit |
-| Airflow Webserver | `localhost:8082` | DAG management UI |
-| Pub/Sub Emulator | `localhost:8085` | Local Pub/Sub for development |
-| BigTable Emulator | `localhost:8086` | Local BigTable for development |
+| Ingestion | `localhost:8080` | Go event API (`POST /api/v1/events`, `GET /healthz`) |
+| Governance | `localhost:8081` | FastAPI RBAC + audit (`GET /check/{user}/{dataset}`) |
+| Airflow | `localhost:8082` | DAG UI (admin/admin) |
+| Pub/Sub Emulator | `localhost:8085` | Local event streaming |
+| BigTable Emulator | `localhost:8086` | Local hot-path store |
 
 ## Modules
 
-### A. [Ingestion Service](ingestion-service/) (Go)
+### [Ingestion Service](ingestion-service/) — Go
 
-High-throughput event ingestion with schema validation, dual-write to Pub/Sub and BigTable, dead-letter queue for invalid events, and Prometheus metrics. Handles graceful shutdown with in-flight request draining, Pub/Sub flush, and BigTable connection cleanup.
+The single write path. Receives events via HTTP, validates against embedded JSON Schemas, publishes to Pub/Sub, writes to BigTable for deduplication. Interface-driven (`EventPublisher`, `EventWriter`) for testability. Graceful shutdown drains HTTP connections, flushes Pub/Sub buffers, closes BigTable. Prometheus metrics: `ingestion_events_received_total`, `ingestion_validation_latency_seconds`, `ingestion_publish_latency_seconds`.
 
-### B. [Orchestration](orchestration/) (Airflow)
+### [Orchestration](orchestration/) — Airflow
 
-Daily batch pipeline (`financial_pipeline_daily`) running at 02:00 UTC with 4-hour SLA. Task chain: freshness check, staging load (MERGE for deduplication), dbt transforms, dbt tests, financial reports, anomaly detection, and audit logging. Custom operators for BigQuery freshness monitoring and statistical anomaly detection.
+Daily pipeline at 02:00 UTC with 4-hour SLA. Custom `BigQueryFreshnessOperator` skips (not fails) on stale data. `AnomalyDetectionOperator` computes 30-day rolling mean+stddev and flags >2σ deviations. Audit task runs with `trigger_rule=ALL_DONE` — logs the outcome regardless of upstream success/failure.
 
-### C. [dbt Project](dbt_project/) (SQL)
+### [dbt Project](dbt_project/) — SQL
 
-Three-layer transformation model (staging, intermediate, marts) with 5 fact tables, 3 custom macros, referential integrity tests, and seed data for currency exchange rates, product line mapping, and cost center hierarchy. BigQuery-optimized with date partitioning and clustering.
+Staging views (dedup + cast), ephemeral intermediate CTEs (business logic), partitioned+clustered mart tables (reporting). Window functions: DoD/WoW growth via `LAG`, 7-day rolling averages, MTD running totals. Custom macros: `cents_to_dollars`, `safe_divide`, `date_spine`. Seed data for currency rates, product lines, cost centers.
 
-### D. [Governance Service](governance/) (Python/FastAPI)
+### [Governance](governance/) — Python/FastAPI
 
-RBAC-based access control with 5 roles (admin, finance_analyst, data_engineer, executive, auditor), glob-pattern dataset matching, complete audit logging of every access check and permission change, and IAM sync to generate Terraform HCL or direct GCP API bindings.
+5 roles × 5 dataset patterns × 3 permission levels. `fnmatch` glob matching (`staging.*` matches `staging.stg_revenue_transactions`). Every access check writes to `audit.access_log`. Every grant/revoke writes to `audit.permission_changes`. IAM sync generates Terraform HCL or applies directly via BigQuery API. Validates: no primitive roles, no `allUsers`, service accounts only.
 
-### E. [Infrastructure](terraform/) (Terraform)
+### [Infrastructure](terraform/) — Terraform
 
-7 Terraform modules: BigQuery, BigTable, Pub/Sub, GCS (dual-bucket with lifecycle tiering), IAM (least privilege, Workload Identity), Kubernetes (GKE Autopilot), Cloud Composer, and Disaster Recovery (dataset snapshots, monthly DR tests). Separate dev/prod environments.
+8 modules. BigQuery: 5 datasets with table schemas imported from shared `schemas/`. BigTable: SSD, GC policies (90d event data, 1 version metadata). Pub/Sub: exactly-once, 5 retries → DLQ. GCS: lifecycle tiering (Standard → Nearline 30d → Coldline 90d → Archive 365d → Delete 7yr). IAM: 4 service accounts, Workload Identity, zero exported keys. GKE: Autopilot, HPA 2-10 replicas, network policies per service. DR: daily BQ snapshots, cross-region GCS replication, RTO <45min, RPO <1hr.
 
 ## Design Decisions
 
-### BigTable for hot path (vs Redis)
+| Decision | Why | Tradeoff |
+|----------|-----|----------|
+| **BigTable over Redis** for hot path | Durability, native GCP integration, auto-scaling, natural path to Spanner | Higher latency (~5ms vs ~1ms) |
+| **Best-effort BigTable writes** | Pub/Sub is the durable backbone; BigTable is a hot-path optimization | Hot-path queries may briefly lag behind Pub/Sub |
+| **dbt over raw SQL** | Testability, lineage, documentation-as-code, staging/intermediate/marts pattern | Additional build step, dbt-specific learning curve |
+| **RBAC over ABAC** | Simpler to audit for SOX/ITGC compliance, easier to reason about | Less granular than attribute-based policies |
+| **Cross-region GCS over multi-region** | Explicit replication control, integrity verification, compliance-friendly | Requires managing Storage Transfer job |
+| **Cloud Composer over self-hosted Airflow** | Operational simplicity, managed upgrades, GCP-native IAM | Higher cost, less customization |
+| **GKE Autopilot over Standard** | No node pool sizing, per-pod billing, built-in security hardening | Less control over node configuration |
+| **Skip (not fail) on stale data** | Prevents cascading failures; stale data is informational, not a pipeline blocker | Silently stale results if alerting isn't watched |
 
-Chose BigTable for durability guarantees, native GCP integration, and automatic scaling. Redis would be faster but requires separate replication and persistence management. At scale, BigTable's built-in replication and consistent performance under load is worth the latency tradeoff. BigTable also provides a natural path to Spanner if we need global consistency later.
+## CI/CD
 
-### dbt over raw SQL
+7 parallel CI jobs run on every push — no GCP credentials required:
 
-Testability, built-in documentation, and lineage tracking. dbt models serve as both transformation logic AND documentation of the data model. Every business rule is version-controlled, tested, and documented in one place. The staging/intermediate/marts pattern enforces separation of concerns -- staging handles deduplication and type casting, intermediate handles business logic, marts handle reporting aggregations.
+| Job | What it checks |
+|-----|---------------|
+| **Go** | `go vet` + `golangci-lint` + `go test -race` with coverage |
+| **Python** | `ruff` + `mypy` + `pytest` with coverage |
+| **dbt** | `dbt deps` + `dbt parse` (offline, no BigQuery) |
+| **Terraform** | `terraform fmt` + `terraform validate` (all 8 modules) + TFLint |
+| **Docker** | Build both service images (no push) |
+| **Airflow** | DAG import validation + dependency graph tests |
 
-### RBAC over ABAC
-
-Simpler to implement, audit, and reason about. ABAC is the logical next step when we need attribute-based conditions (time-of-day restrictions, IP-based access, data classification levels). Starting with RBAC means the permission model is easy to explain in compliance audits. The glob-pattern matching (`marts_finance.*`) provides enough granularity without the complexity of a full policy engine.
-
-### Cross-region GCS over multi-region bucket
-
-Explicit control over replication -- we know exactly what is replicated, when, and can verify integrity. Multi-region is simpler but hides the replication details. For financial data with compliance requirements, explicit is better than implicit. The Storage Transfer job runs at 03:00 UTC daily with lifecycle tiering: Standard (30d), Nearline (90d), Coldline (365d), Archive (2555d / 7 years).
-
-### Cloud Composer over self-managed Airflow
-
-Operational simplicity. Self-managed Airflow requires managing the scheduler, webserver, database, and workers. Composer handles all of that, letting the team focus on DAG logic. The cost premium is worth it for a team focused on data engineering, not infrastructure management. Docker-compose local setup mirrors the Composer configuration for development parity.
+CD is manual-trigger only (`workflow_dispatch`) — builds images, runs `terraform plan` (no auto-apply), deploys dbt to staging.
 
 ## Testing
 
 ```bash
-make test           # Run all tests (Go + Python + dbt + DAGs)
-make test-go        # Go unit tests with race detector and coverage
-make test-python    # Python tests with coverage report
-make test-dbt       # dbt compile + parse (dry-run, no BigQuery needed)
-make test-dags      # Airflow DAG validation tests
-make bench          # Go benchmarks (target: 10K events/sec)
-make lint           # All linters (go vet, golangci-lint, ruff, mypy, terraform fmt)
+make test          # All tests
+make test-go       # Go: unit + race detector + coverage
+make test-python   # Python: ruff + mypy + pytest
+make bench         # Go: benchmarks (280K validations/sec)
+make lint          # All linters across all languages
 ```
-
-CI runs all checks on every pull request via GitHub Actions. No GCP credentials required -- all CI jobs use emulators or dry-run modes.
 
 ## Project Structure
 
 ```
-gcp-financial-data-platform/
-├── ingestion-service/           # Go event ingestion service
-│   ├── cmd/server/              # Entrypoint (HTTP server, graceful shutdown)
-│   ├── internal/
-│   │   ├── bigtable/            # BigTable writer (hot-path storage)
-│   │   ├── handler/             # HTTP handlers (event ingestion endpoint)
-│   │   ├── metrics/             # Prometheus metrics (counters, histograms)
-│   │   ├── publisher/           # Pub/Sub publisher (validated + DLQ topics)
-│   │   └── validator/           # JSON schema validation engine
-│   │       └── schemas/         # Embedded JSON schemas (revenue, usage, cost)
-│   └── Dockerfile
-├── governance/                  # Python/FastAPI governance service
-│   ├── app/
-│   │   ├── models/              # RBAC model (roles, permissions, audit entries)
-│   │   ├── routes/              # API routes (access check, grant, revoke, audit)
-│   │   └── services/            # Business logic (access control, audit logger, IAM sync)
-│   ├── tests/                   # pytest tests (RBAC, audit, IAM sync)
-│   └── Dockerfile
-├── orchestration/               # Airflow DAGs and plugins
-│   ├── dags/                    # financial_pipeline_daily.py
-│   ├── plugins/operators/       # Custom operators (freshness, anomaly detection)
-│   └── tests/                   # DAG validation tests
-├── dbt_project/                 # dbt transformations
-│   ├── models/
-│   │   ├── staging/             # stg_revenue_transactions, stg_usage_metrics, stg_cost_records
-│   │   ├── intermediate/        # int_daily_revenue, int_customer_usage, int_cost_by_center
-│   │   └── marts/
-│   │       ├── finance/         # fct_daily_revenue_summary, fct_monthly_cost_attribution, fct_revenue_by_product_region
-│   │       └── analytics/       # fct_customer_usage_report, fct_unit_economics
-│   ├── macros/                  # cents_to_dollars, safe_divide, date_spine
-│   ├── seeds/                   # Reference data (currency rates, product lines, cost centers)
-│   └── tests/                   # Custom data quality tests
-├── terraform/                   # Infrastructure-as-Code
-│   ├── modules/
-│   │   ├── bigquery/            # Datasets, tables, IAM
-│   │   ├── bigtable/            # Instance, tables, garbage collection
-│   │   ├── pubsub/              # Topics, subscriptions, DLQ
-│   │   ├── gcs/                 # Raw + backup buckets, lifecycle, replication
-│   │   ├── iam/                 # Service accounts, Workload Identity
-│   │   ├── kubernetes/          # GKE Autopilot cluster
-│   │   ├── cloud_composer/      # Managed Airflow environment
-│   │   └── disaster_recovery/   # Snapshots, DR test scheduler
-│   └── environments/
-│       ├── dev/                 # Development environment variables
-│       └── prod/                # Production environment variables
-├── schemas/                     # Source-of-truth JSON schemas
-│   ├── revenue_transaction.json
-│   ├── usage_metric.json
-│   └── cost_record.json
-├── scripts/                     # Development utilities
-│   ├── generate_sample_data.py  # Sample data generator
-│   ├── seed_bigtable.py         # BigTable seeder
-│   └── run_local.sh             # Local development setup
-├── .github/workflows/ci.yml     # GitHub Actions CI pipeline
-├── docker-compose.yml           # Local development stack
-├── Makefile                     # Build, test, lint, deploy commands
-└── docs/
-    ├── system_design.md         # Interview-ready system design walkthrough
-    ├── data_model.md            # Entity relationships and schema documentation
-    └── runbooks/
-        ├── disaster_recovery.md # DR procedure (RTO <45min, RPO <1hr)
-        ├── incident_response.md # Pipeline failure runbook
-        └── access_onboarding.md # User access provisioning guide
+├── schemas/                     # THE CONTRACT — shared JSON Schemas
+├── ingestion-service/           # Go write path
+│   ├── cmd/server/              #   HTTP server + graceful shutdown
+│   └── internal/                #   handler, validator, publisher, bigtable, metrics
+├── orchestration/               # Airflow batch path
+│   ├── dags/                    #   financial_pipeline_daily
+│   └── plugins/operators/       #   freshness + anomaly detection operators
+├── dbt_project/                 # SQL transform layer
+│   └── models/                  #   staging → intermediate → marts
+├── governance/                  # Python read path
+│   └── app/                     #   routes, models, services (RBAC, audit, IAM sync)
+├── terraform/                   # Infrastructure
+│   ├── modules/                 #   8 modules (bigquery, bigtable, pubsub, gcs, iam, k8s, composer, DR)
+│   └── environments/            #   dev + prod
+├── scripts/                     # Data generation + local dev setup
+├── docs/                        # System design, data model, runbooks
+├── .github/workflows/           # CI (7 jobs) + CD (manual deploy)
+├── docker-compose.yml           # Full local stack with emulators
+└── Makefile                     # Single interface for everything
 ```
+
+## Reliability Targets
+
+| Metric | Target | How |
+|--------|--------|-----|
+| **Durability** | 99.99% | Pub/Sub (durable backbone) + GCS cross-region replication + BQ snapshots |
+| **RTO** | <45 min | Automated restore from BQ snapshots, scripted DR procedure |
+| **RPO** | <1 hr | Daily snapshots at 03:00 UTC, continuous Pub/Sub retention (7d) |
+| **Hot-path latency** | <100ms | Go service + BigTable (P99) |
+| **Batch SLA** | <4 hr | Airflow SLA callback, pipeline completes in ~30 min typical |
+| **Audit retention** | 7 years | SOX/ITGC compliance, BigQuery audit dataset with expiration policies |
 
 ## License
 
-MIT
+Apache 2.0 — see [LICENSE](LICENSE).
