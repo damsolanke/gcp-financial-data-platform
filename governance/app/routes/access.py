@@ -138,7 +138,7 @@ async def check_user_access(
     user_id: str,
     dataset_id: str,
     permission: Permission = Permission.READ,
-    req: Request = None,
+    req: Request | None = None,
 ) -> AccessCheckResult:
     """Check if a user has access to a specific dataset.
 

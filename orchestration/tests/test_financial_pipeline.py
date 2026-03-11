@@ -73,7 +73,11 @@ class TestFinancialPipelineDAG:
     def test_no_cycles(self, dagbag):
         dag = dagbag.dags[self.DAG_ID]
         # If the DAG has cycles Airflow raises during import, but be explicit.
-        assert not dag.test_cycle()
+        # test_cycle() was removed in Airflow 2.x; use topological_sort instead.
+        try:
+            dag.topological_sort()
+        except Exception:
+            pytest.fail("DAG contains a cycle")
 
     def test_default_args(self, dagbag):
         dag = dagbag.dags[self.DAG_ID]

@@ -23,6 +23,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 # ---------------------------------------------------------------------------
 # Go -- ingestion-service
 # ---------------------------------------------------------------------------
@@ -116,6 +119,9 @@ jobs:
     defaults:
       run:
         working-directory: dbt_project
+    env:
+      GCP_PROJECT_ID: ci-dry-run-project
+      GCP_KEYFILE_PATH: /dev/null
     steps:
       - name: Checkout
         uses: actions/checkout@v4

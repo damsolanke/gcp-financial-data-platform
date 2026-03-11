@@ -1,13 +1,12 @@
 """Application configuration via environment variables (12-factor)."""
 
-from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """All config comes from environment. No config files in production."""
 
-    model_config = ConfigDict(env_prefix="", case_sensitive=False)
+    model_config = SettingsConfigDict(env_prefix="", case_sensitive=False)
 
     port: int = 8081
     log_level: str = "info"
