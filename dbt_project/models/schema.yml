@@ -1,0 +1,256 @@
+version: 2
+
+models:
+  # ─── Finance Marts ──────────────────────────────────────────────────
+  - name: fct_daily_revenue_summary
+    description: >
+      Daily revenue summary partitioned by date and clustered by product_line and region.
+      Includes day-over-day and week-over-week growth rates, plus month-to-date running totals.
+      Primary reporting table for revenue analytics.
+    columns:
+      - name: revenue_date
+        description: Calendar date of the revenue aggregation.
+        tests:
+          - not_null
+      - name: product_line
+        description: Product line generating the revenue (api_usage, enterprise_license, professional_services).
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['api_usage', 'enterprise_license', 'professional_services']
+      - name: region
+        description: Geographic region of the transactions (us-east, us-west, eu-west, ap-southeast).
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['us-east', 'us-west', 'eu-west', 'ap-southeast']
+      - name: transaction_count
+        description: Total number of transactions for this date/product/region combination.
+        tests:
+          - not_null
+      - name: total_revenue_cents_usd
+        description: Total revenue in USD cents (integer, avoids floating point).
+        tests:
+          - not_null
+      - name: total_revenue_usd
+        description: Total revenue in USD dollars (rounded to 2 decimal places).
+        tests:
+          - not_null
+      - name: avg_transaction_cents_usd
+        description: Sum of per-currency average transaction amounts converted to USD cents.
+      - name: prev_day_revenue_usd
+        description: Previous day total revenue in USD for the same product/region. NULL for the first day.
+      - name: dod_growth_rate
+        description: Day-over-day revenue growth rate as a decimal. NULL when previous day is zero or absent.
+      - name: prev_week_revenue_usd
+        description: Revenue from 7 days prior for the same product/region. NULL for the first 7 days.
+      - name: wow_growth_rate
+        description: Week-over-week revenue growth rate as a decimal. NULL when prior week is zero or absent.
+      - name: mtd_revenue_usd
+        description: Month-to-date cumulative revenue in USD for the product/region.
+        tests:
+          - not_null
+
+  - name: fct_monthly_cost_attribution
+    description: >
+      Monthly cost rollup by cost center with category-level breakdown (compute, storage, network, personnel).
+      Includes percentage allocation per category and budget variance placeholders.
+      Enriched with cost center hierarchy (department, division).
+    columns:
+      - name: cost_center
+        description: Cost center responsible for the expenses.
+        tests:
+          - not_null
+      - name: cost_month
+        description: First day of the month for the cost aggregation period.
+        tests:
+          - not_null
+      - name: currency
+        description: Original currency of the cost records.
+        tests:
+          - not_null
+      - name: compute_cents
+        description: Total compute cost in cents for the month.
+      - name: storage_cents
+        description: Total storage cost in cents for the month.
+      - name: network_cents
+        description: Total network cost in cents for the month.
+      - name: personnel_cents
+        description: Total personnel cost in cents for the month.
+      - name: total_cents
+        description: Total cost across all categories in cents.
+        tests:
+          - not_null
+      - name: compute_usd
+        description: Total compute cost in USD dollars.
+      - name: storage_usd
+        description: Total storage cost in USD dollars.
+      - name: network_usd
+        description: Total network cost in USD dollars.
+      - name: personnel_usd
+        description: Total personnel cost in USD dollars.
+      - name: total_usd
+        description: Total cost across all categories in USD dollars.
+        tests:
+          - not_null
+      - name: compute_pct
+        description: Percentage of total cost attributed to compute.
+      - name: storage_pct
+        description: Percentage of total cost attributed to storage.
+      - name: network_pct
+        description: Percentage of total cost attributed to network.
+      - name: personnel_pct
+        description: Percentage of total cost attributed to personnel.
+      - name: total_records
+        description: Count of individual cost records aggregated into this row.
+      - name: budget_amount_usd
+        description: Budgeted amount for this cost center/month (NULL placeholder, populated from budget source).
+      - name: budget_variance_usd
+        description: Difference between actual and budgeted cost (NULL placeholder).
+      - name: budget_variance_pct
+        description: Budget variance as a percentage (NULL placeholder).
+      - name: department
+        description: Department name from cost center hierarchy.
+      - name: division
+        description: Division name from cost center hierarchy.
+
+  - name: fct_revenue_by_product_region
+    description: >
+      Cross-tabulation of daily revenue by product line and region.
+      Includes pivoted region columns for each geography, running totals per product/region,
+      and product line display metadata.
+    columns:
+      - name: revenue_date
+        description: Calendar date of the revenue.
+        tests:
+          - not_null
+      - name: product_line
+        description: Internal product line identifier.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['api_usage', 'enterprise_license', 'professional_services']
+      - name: region
+        description: Geographic region.
+        tests:
+          - not_null
+      - name: transaction_count
+        description: Number of transactions for this date/product/region.
+        tests:
+          - not_null
+      - name: total_revenue_usd
+        description: Total revenue in USD for this date/product/region.
+        tests:
+          - not_null
+      - name: us_east_revenue_usd
+        description: Revenue from the us-east region for this date/product.
+      - name: us_west_revenue_usd
+        description: Revenue from the us-west region for this date/product.
+      - name: eu_west_revenue_usd
+        description: Revenue from the eu-west region for this date/product.
+      - name: ap_southeast_revenue_usd
+        description: Revenue from the ap-southeast region for this date/product.
+      - name: product_total_revenue_usd
+        description: Total revenue across all regions for this date/product.
+      - name: running_total_revenue_usd
+        description: Cumulative revenue for this product/region from the start of data.
+      - name: running_total_transactions
+        description: Cumulative transaction count for this product/region.
+      - name: product_display_name
+        description: Human-readable product line name from seed mapping.
+      - name: business_unit
+        description: Business unit owning the product line from seed mapping.
+
+  # ─── Analytics Marts ────────────────────────────────────────────────
+  - name: fct_customer_usage_report
+    description: >
+      Per-customer lifetime usage report with tier classification (free, growth, enterprise)
+      based on total API call volume. Includes all usage metric totals and activity summary.
+    columns:
+      - name: customer_id
+        description: Unique customer identifier.
+        tests:
+          - unique
+          - not_null
+      - name: usage_tier
+        description: >
+          Customer tier based on total API calls.
+          free (< 1,000), growth (1,000 - 99,999), enterprise (>= 100,000).
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['free', 'growth', 'enterprise']
+      - name: total_api_calls
+        description: Lifetime total number of API calls made by the customer.
+      - name: total_tokens_processed
+        description: Lifetime total number of tokens processed by the customer.
+      - name: total_compute_hours
+        description: Lifetime total compute hours consumed by the customer.
+      - name: first_seen_date
+        description: Earliest date any usage metric was recorded for this customer.
+        tests:
+          - not_null
+      - name: last_seen_date
+        description: Most recent date any usage metric was recorded for this customer.
+        tests:
+          - not_null
+      - name: account_age_days
+        description: Number of days between first and last seen date (inclusive).
+      - name: active_days
+        description: Number of distinct days with at least one API call event.
+      - name: avg_daily_api_calls
+        description: Average API calls per active day.
+      - name: avg_tokens_per_call
+        description: Average tokens processed per API call.
+      - name: avg_daily_compute_hours
+        description: Average compute hours consumed per active day.
+
+  - name: fct_unit_economics
+    description: >
+      Unit economics by product line and month. Joins revenue, usage, and cost data
+      to calculate per-unit revenue and cost metrics including gross margin.
+    columns:
+      - name: economics_month
+        description: First day of the month for the economics period.
+        tests:
+          - not_null
+      - name: product_line
+        description: Product line for the revenue attribution.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['api_usage', 'enterprise_license', 'professional_services']
+      - name: total_revenue_usd
+        description: Total revenue in USD for the product line in this month.
+        tests:
+          - not_null
+      - name: total_transactions
+        description: Total transaction count for this product/month.
+      - name: total_api_calls
+        description: Total API calls across all customers for this month.
+      - name: total_tokens_processed
+        description: Total tokens processed across all customers for this month.
+      - name: total_compute_hours
+        description: Total compute hours consumed across all customers for this month.
+      - name: active_customers
+        description: Count of distinct customers with usage in this month.
+      - name: total_cost_usd
+        description: Total cost in USD across all cost centers for this month.
+      - name: revenue_per_api_call
+        description: Revenue divided by total API calls.
+      - name: revenue_per_token
+        description: Revenue divided by total tokens processed.
+      - name: revenue_per_compute_hour
+        description: Revenue divided by total compute hours.
+      - name: revenue_per_customer
+        description: Revenue divided by active customer count.
+      - name: cost_per_api_call
+        description: Total cost divided by total API calls.
+      - name: cost_per_compute_hour
+        description: Total cost divided by total compute hours.
+      - name: cost_per_customer
+        description: Total cost divided by active customer count.
+      - name: gross_margin_usd
+        description: Revenue minus cost in USD.
+      - name: gross_margin_pct
+        description: Gross margin as a percentage of revenue.

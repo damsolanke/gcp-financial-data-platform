@@ -1,0 +1,5 @@
+currency_code,currency_name,rate_to_usd
+USD,US Dollar,1.0
+EUR,Euro,1.08
+GBP,British Pound,1.27
+JPY,Japanese Yen,0.0067

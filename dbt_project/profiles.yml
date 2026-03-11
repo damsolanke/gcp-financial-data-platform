@@ -1,0 +1,38 @@
+financial_data_platform:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      dataset: "{{ env_var('BQ_DATASET', 'financial_dev') }}"
+      keyfile: "{{ env_var('GCP_KEYFILE_PATH') }}"
+      location: US
+      threads: 4
+      timeout_seconds: 300
+      priority: interactive
+      retries: 1
+
+    staging:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      dataset: "{{ env_var('BQ_DATASET', 'financial_staging') }}"
+      keyfile: "{{ env_var('GCP_KEYFILE_PATH') }}"
+      location: US
+      threads: 8
+      timeout_seconds: 600
+      priority: interactive
+      retries: 1
+
+    prod:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      dataset: "{{ env_var('BQ_DATASET', 'financial_prod') }}"
+      keyfile: "{{ env_var('GCP_KEYFILE_PATH') }}"
+      location: US
+      threads: 16
+      timeout_seconds: 900
+      priority: batch
+      retries: 3

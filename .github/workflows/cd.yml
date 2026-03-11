@@ -1,0 +1,282 @@
+# =============================================================================
+# Continuous Deployment -- GCP Financial Data Platform
+# =============================================================================
+# Triggered on push to main (i.e., after a PR merge).  Builds container images,
+# pushes them to Artifact Registry, plans Terraform changes, and deploys dbt
+# models to the staging environment.
+#
+# Terraform apply is intentionally NOT automated -- the plan is uploaded as an
+# artifact and summarised on the PR.  A human must approve and run apply via
+# a separate workflow or the console.
+#
+# Required repository secrets:
+#   GCP_PROJECT_ID           - GCP project for staging deployments
+#   GCP_SA_KEY               - Service account key JSON (base64-encoded)
+#   GCP_WORKLOAD_IDENTITY_PROVIDER - (preferred) Workload Identity pool provider
+#   GCP_SERVICE_ACCOUNT_EMAIL     - (preferred) SA email for Workload Identity
+#   ARTIFACT_REGISTRY_REPO   - e.g. us-central1-docker.pkg.dev/project/repo
+#   GCP_REGION               - e.g. us-central1
+#   TF_STATE_BUCKET          - GCS bucket for Terraform remote state
+# =============================================================================
+
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: cd-main
+  cancel-in-progress: false          # never cancel a deploy mid-flight
+
+permissions:
+  contents: read
+  id-token: write                    # required for Workload Identity Federation
+  pull-requests: write               # to comment Terraform plans on PRs
+
+# ---------------------------------------------------------------------------
+# Build container images and push to Artifact Registry
+# ---------------------------------------------------------------------------
+jobs:
+  build-and-push:
+    name: "Build & push container images"
+    runs-on: ubuntu-latest
+    outputs:
+      ingestion_image: ${{ steps.meta.outputs.ingestion_image }}
+      governance_image: ${{ steps.meta.outputs.governance_image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          # Prefer Workload Identity Federation; fall back to SA key.
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+          # If using a service account key instead, uncomment:
+          # credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ secrets.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image tags
+        id: meta
+        run: |
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          REPO="${{ secrets.ARTIFACT_REGISTRY_REPO }}"
+          echo "ingestion_image=${REPO}/ingestion-service:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "governance_image=${REPO}/governance-service:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push ingestion-service
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ingestion-service
+          push: true
+          tags: |
+            ${{ secrets.ARTIFACT_REGISTRY_REPO }}/ingestion-service:${{ steps.meta.outputs.short_sha }}
+            ${{ secrets.ARTIFACT_REGISTRY_REPO }}/ingestion-service:latest
+          cache-from: type=gha,scope=ingestion
+          cache-to: type=gha,scope=ingestion,mode=max
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Build & push governance-service
+        uses: docker/build-push-action@v6
+        with:
+          context: ./governance
+          push: true
+          tags: |
+            ${{ secrets.ARTIFACT_REGISTRY_REPO }}/governance-service:${{ steps.meta.outputs.short_sha }}
+            ${{ secrets.ARTIFACT_REGISTRY_REPO }}/governance-service:latest
+          cache-from: type=gha,scope=governance
+          cache-to: type=gha,scope=governance,mode=max
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+  # ---------------------------------------------------------------------------
+  # Terraform -- plan only (manual approval required for apply)
+  # ---------------------------------------------------------------------------
+  terraform-plan:
+    name: "Terraform: plan (staging)"
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.7"
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Terraform init
+        working-directory: terraform/environments/dev
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="prefix=staging" \
+            -input=false
+
+      - name: Terraform plan
+        id: plan
+        working-directory: terraform/environments/dev
+        run: |
+          terraform plan \
+            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -out=tfplan \
+            -input=false \
+            -detailed-exitcode \
+            2>&1 | tee plan_output.txt
+        continue-on-error: true
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: |
+            terraform/environments/dev/tfplan
+            terraform/environments/dev/plan_output.txt
+          retention-days: 30
+
+      - name: Comment plan summary on PR
+        if: github.event_name == 'push'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planPath = 'terraform/environments/dev/plan_output.txt';
+
+            let planOutput = '(plan output not found)';
+            try {
+              const raw = fs.readFileSync(planPath, 'utf8');
+              // Truncate to stay within GitHub comment limits.
+              planOutput = raw.length > 60000
+                ? raw.slice(0, 60000) + '\n\n... (truncated)'
+                : raw;
+            } catch (e) {
+              planOutput = `Failed to read plan output: ${e.message}`;
+            }
+
+            // Find the most recent merged PR for this commit.
+            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+
+            const mergedPR = prs.data.find(pr => pr.merged_at);
+            if (!mergedPR) {
+              console.log('No merged PR found for this commit; skipping comment.');
+              return;
+            }
+
+            const body = [
+              '### Terraform Plan (staging)',
+              '',
+              '<details><summary>Plan output</summary>',
+              '',
+              '```',
+              planOutput,
+              '```',
+              '',
+              '</details>',
+              '',
+              '> Plan saved as artifact. **Manual approval** is required before `terraform apply`.',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: mergedPR.number,
+              body,
+            });
+
+      - name: Fail if plan errored
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+  # ---------------------------------------------------------------------------
+  # dbt -- deploy to staging
+  # ---------------------------------------------------------------------------
+  deploy-dbt:
+    name: "dbt: deploy to staging"
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    defaults:
+      run:
+        working-directory: dbt_project
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dbt
+        run: pip install dbt-bigquery
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+          create_credentials_file: true
+
+      - name: Configure dbt profiles for staging
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml <<PROFILES
+          financial_data_platform:
+            target: staging
+            outputs:
+              staging:
+                type: bigquery
+                method: service-account
+                project: ${GCP_PROJECT_ID}
+                dataset: financial_staging
+                keyfile: ${GOOGLE_APPLICATION_CREDENTIALS}
+                location: US
+                threads: 8
+                timeout_seconds: 600
+                priority: interactive
+                retries: 1
+          PROFILES
+
+      - name: dbt deps
+        run: dbt deps
+
+      - name: dbt run (staging)
+        run: dbt run --target staging --full-refresh
+
+      - name: dbt test (staging)
+        run: dbt test --target staging
+
+      - name: Upload dbt artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-artifacts
+          path: |
+            dbt_project/target/manifest.json
+            dbt_project/target/run_results.json
+          retention-days: 30

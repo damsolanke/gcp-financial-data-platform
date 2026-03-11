@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/adesolanke/gcp-financial-data-platform/schemas/cost_record.json",
+  "title": "Cost Record",
+  "description": "An internal cost record tracking operational expenditure by cost center.",
+  "type": "object",
+  "required": [
+    "record_id",
+    "timestamp",
+    "cost_center",
+    "category",
+    "amount_cents",
+    "currency"
+  ],
+  "properties": {
+    "record_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this cost record."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when the cost was incurred."
+    },
+    "cost_center": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Cost center responsible for this expenditure."
+    },
+    "category": {
+      "type": "string",
+      "enum": ["compute", "storage", "network", "personnel"],
+      "description": "Expenditure category."
+    },
+    "amount_cents": {
+      "type": "integer",
+      "description": "Cost amount in cents. May be negative for credits/refunds."
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "ISO 4217 currency code."
+    },
+    "vendor": {
+      "type": "string",
+      "description": "External vendor name, if applicable."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of the cost."
+    }
+  },
+  "additionalProperties": false
+}

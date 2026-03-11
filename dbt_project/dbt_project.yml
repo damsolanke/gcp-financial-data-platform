@@ -1,0 +1,35 @@
+name: financial_data_platform
+version: '1.0.0'
+config-version: 2
+profile: financial_data_platform
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - target
+  - dbt_packages
+  - logs
+
+vars:
+  start_date: '2025-01-01'
+  end_date: '2025-03-31'
+
+models:
+  financial_data_platform:
+    staging:
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: ephemeral
+    marts:
+      finance:
+        +materialized: table
+        +schema: marts_finance
+      analytics:
+        +materialized: table
+        +schema: marts_analytics

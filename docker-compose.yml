@@ -1,0 +1,157 @@
+version: "3.8"
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.8.1-python3.11
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: "REMOVED"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+    BIGTABLE_EMULATOR_HOST: bigtable-emulator:8086
+    GCP_PROJECT_ID: local-project
+  volumes:
+    - ./orchestration/dags:/opt/airflow/dags
+    - ./orchestration/plugins:/opt/airflow/plugins
+    - ./dbt_project:/opt/airflow/dbt_project
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  # ── Emulators ──────────────────────────────────────────────
+
+  pubsub-emulator:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:latest
+    command: >
+      gcloud beta emulators pubsub start
+      --host-port=0.0.0.0:8085
+      --project=local-project
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bigtable-emulator:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:latest
+    command: >
+      gcloud beta emulators bigtable start
+      --host-port=0.0.0.0:8086
+      --project=local-project
+    ports:
+      - "8086:8086"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "8086"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Data Stores ────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Application Services ───────────────────────────────────
+
+  ingestion-service:
+    build:
+      context: ./ingestion-service
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      LOG_LEVEL: debug
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: local-project
+      PUBSUB_TOPIC_VALIDATED: financial-events-validated
+      PUBSUB_TOPIC_DLQ: financial-events-dead-letter
+      BIGTABLE_EMULATOR_HOST: bigtable-emulator:8086
+      BIGTABLE_PROJECT_ID: local-project
+      BIGTABLE_INSTANCE_ID: financial-events
+      BIGTABLE_TABLE_ID: events
+    depends_on:
+      pubsub-emulator:
+        condition: service_healthy
+      bigtable-emulator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  governance-service:
+    build:
+      context: ./governance
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      PORT: "8081"
+      LOG_LEVEL: debug
+      SECRET_KEY: local-dev-secret-change-in-production
+      BIGQUERY_PROJECT_ID: local-project
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Airflow ────────────────────────────────────────────────
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command: >
+      -c "airflow db migrate && airflow users create
+      --username admin --password admin --firstname Admin
+      --lastname User --role Admin --email admin@example.com || true"
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: airflow webserver --port 8082
+    ports:
+      - "8082:8082"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: airflow scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

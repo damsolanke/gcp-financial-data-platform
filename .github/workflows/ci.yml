@@ -1,0 +1,276 @@
+# =============================================================================
+# Continuous Integration -- GCP Financial Data Platform
+# =============================================================================
+# Runs on every pull request targeting main and on every push to main.
+# Each service / layer gets its own independent job so failures are isolated
+# and the matrix is easy to reason about from the Actions tab.
+#
+# Secrets required: none (CI is fully offline / dry-run).
+# =============================================================================
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# ---------------------------------------------------------------------------
+# Go -- ingestion-service
+# ---------------------------------------------------------------------------
+jobs:
+  go-checks:
+    name: "Go: vet / lint / test"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ingestion-service
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: ingestion-service/go.sum
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint (golangci-lint)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.57
+          working-directory: ingestion-service
+          args: --timeout=5m
+
+      - name: Test with race detector
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: ingestion-service/coverage.out
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Python -- governance service
+  # ---------------------------------------------------------------------------
+  python-checks:
+    name: "Python: lint / test"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: governance/requirements.txt
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type check (mypy)
+        run: mypy app/ --ignore-missing-imports
+
+      - name: Test with coverage
+        run: python -m pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage
+          path: governance/coverage.xml
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # dbt -- parse + compile (dry-run, no BigQuery credentials needed)
+  # ---------------------------------------------------------------------------
+  dbt-checks:
+    name: "dbt: parse / compile"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dbt_project
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dbt
+        run: pip install dbt-bigquery
+
+      # Create a CI profiles.yml that uses a dummy project.  parse and compile
+      # do NOT connect to BigQuery, so the project doesn't need to exist.
+      - name: Write CI profiles.yml
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml <<'PROFILES'
+          financial_data_platform:
+            target: ci
+            outputs:
+              ci:
+                type: bigquery
+                method: oauth
+                project: ci-dry-run-project
+                dataset: ci_dataset
+                location: US
+                threads: 1
+                timeout_seconds: 30
+                priority: interactive
+                retries: 0
+          PROFILES
+
+      - name: dbt deps
+        run: dbt deps
+
+      - name: dbt parse
+        run: dbt parse
+
+      - name: dbt compile
+        run: dbt compile --no-partial-parse
+
+  # ---------------------------------------------------------------------------
+  # Terraform -- fmt / validate every module
+  # ---------------------------------------------------------------------------
+  terraform-checks:
+    name: "Terraform: fmt / validate"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.7"
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive terraform/
+
+      - name: Validate modules
+        run: |
+          set -euo pipefail
+          for dir in terraform/modules/*/; do
+            module="$(basename "$dir")"
+            echo "::group::Validating module: ${module}"
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+            echo "::endgroup::"
+          done
+
+      - name: TFLint
+        run: |
+          set -euo pipefail
+          tflint --init --config="$(pwd)/.tflint.hcl" 2>/dev/null || true
+          for dir in terraform/modules/*/; do
+            module="$(basename "$dir")"
+            echo "::group::TFLint: ${module}"
+            tflint --chdir="$dir" --minimum-failure-severity=error || true
+            echo "::endgroup::"
+          done
+
+  # ---------------------------------------------------------------------------
+  # Docker -- build images (no push)
+  # ---------------------------------------------------------------------------
+  docker-checks:
+    name: "Docker: build images"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: ingestion-service
+            context: ./ingestion-service
+            image: ingestion-service
+          - service: governance-service
+            context: ./governance
+            image: governance-service
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: false
+          tags: ${{ matrix.image }}:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Airflow DAGs -- parse + test
+  # ---------------------------------------------------------------------------
+  dag-checks:
+    name: "Airflow: DAG validation"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: orchestration
+    env:
+      # Airflow needs a home directory and minimal config for testing.
+      AIRFLOW_HOME: ${{ github.workspace }}/orchestration
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: ${{ github.workspace }}/orchestration/dags
+      AIRFLOW__CORE__PLUGINS_FOLDER: ${{ github.workspace }}/orchestration/plugins
+      # Use SQLite for CI -- no external database required.
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "sqlite:////${{ github.workspace }}/orchestration/airflow.db"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Airflow + dependencies
+        run: |
+          pip install "apache-airflow==2.8.1" \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.8.1/constraints-3.11.txt"
+          pip install pytest google-cloud-bigquery
+
+      - name: Initialize Airflow metadata DB
+        run: airflow db init
+
+      - name: Run DAG tests
+        run: python -m pytest tests/ -v

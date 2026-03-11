@@ -1,0 +1,9 @@
+cost_center,department,division
+engineering,Engineering,Technology
+infrastructure,Infrastructure,Technology
+data_platform,Data Platform,Technology
+sales,Sales,Revenue
+marketing,Marketing,Revenue
+support,Customer Support,Operations
+finance,Finance,Corporate
+hr,Human Resources,Corporate
