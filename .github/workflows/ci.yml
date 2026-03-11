@@ -23,9 +23,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 # ---------------------------------------------------------------------------
 # Go -- ingestion-service
 # ---------------------------------------------------------------------------
@@ -38,10 +35,10 @@ jobs:
         working-directory: ingestion-service
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: ingestion-service/go.mod
           cache-dependency-path: ingestion-service/go.sum
@@ -53,7 +50,7 @@ jobs:
         run: go vet ./...
 
       - name: Lint (golangci-lint)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
           working-directory: ingestion-service
@@ -64,7 +61,7 @@ jobs:
 
       - name: Upload coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: go-coverage
           path: ingestion-service/coverage.out
@@ -81,10 +78,10 @@ jobs:
         working-directory: governance
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -104,17 +101,17 @@ jobs:
 
       - name: Upload coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-coverage
           path: governance/coverage.xml
           retention-days: 14
 
   # ---------------------------------------------------------------------------
-  # dbt -- parse + compile (dry-run, no BigQuery credentials needed)
+  # dbt -- parse (dry-run, no BigQuery credentials needed)
   # ---------------------------------------------------------------------------
   dbt-checks:
-    name: "dbt: parse / compile"
+    name: "dbt: parse"
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -124,10 +121,10 @@ jobs:
       GCP_KEYFILE_PATH: /dev/null
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -135,8 +132,8 @@ jobs:
       - name: Install dbt
         run: pip install dbt-bigquery
 
-      # Create a CI profiles.yml that uses a dummy project.  parse and compile
-      # do NOT connect to BigQuery, so the project doesn't need to exist.
+      # Create a CI profiles.yml that uses a dummy project.  parse does NOT
+      # connect to BigQuery, so the project doesn't need to exist.
       - name: Write CI profiles.yml
         run: |
           mkdir -p ~/.dbt
@@ -170,15 +167,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "~> 1.7"
+        uses: hashicorp/setup-terraform@v4
 
       - name: Setup TFLint
-        uses: terraform-linters/setup-tflint@v4
+        uses: terraform-linters/setup-tflint@v6
         with:
           tflint_version: latest
 
@@ -225,13 +220,13 @@ jobs:
             image: governance-service
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build ${{ matrix.service }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           push: false
@@ -249,19 +244,17 @@ jobs:
       run:
         working-directory: orchestration
     env:
-      # Airflow needs a home directory and minimal config for testing.
       AIRFLOW_HOME: ${{ github.workspace }}/orchestration
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_FOLDER: ${{ github.workspace }}/orchestration/dags
       AIRFLOW__CORE__PLUGINS_FOLDER: ${{ github.workspace }}/orchestration/plugins
-      # Use SQLite for CI -- no external database required.
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "sqlite:////${{ github.workspace }}/orchestration/airflow.db"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
