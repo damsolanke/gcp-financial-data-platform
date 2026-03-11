@@ -1,0 +1,4 @@
+# Mark utility scripts as generated so they don't dominate language stats.
+# The core platform is Go (ingestion), HCL (terraform), SQL (dbt), and Python (governance).
+scripts/generate_sample_data.py linguist-generated
+scripts/seed_bigtable.py linguist-generated
