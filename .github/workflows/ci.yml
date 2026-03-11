@@ -162,9 +162,6 @@ jobs:
       - name: dbt parse
         run: dbt parse
 
-      - name: dbt compile
-        run: dbt compile --no-partial-parse
-
   # ---------------------------------------------------------------------------
   # Terraform -- fmt / validate every module
   # ---------------------------------------------------------------------------

@@ -1,5 +1,7 @@
 """Access control API endpoints."""
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Request
 
 from ..models.rbac import (
@@ -138,7 +140,7 @@ async def check_user_access(
     user_id: str,
     dataset_id: str,
     permission: Permission = Permission.READ,
-    req: Request | None = None,
+    req: Optional[Request] = None,
 ) -> AccessCheckResult:
     """Check if a user has access to a specific dataset.
 
