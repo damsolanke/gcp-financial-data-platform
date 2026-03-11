@@ -66,7 +66,7 @@ func TestPubSubPublisher_Publish(t *testing.T) {
 	ctx := context.Background()
 
 	client, validatedSub, _ := createTestTopicsAndSubs(ctx, t)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	publisher, err := NewPubSubPublisher(ctx, testProjectID, testTopicValidated, testTopicDLQ)
 	if err != nil {
@@ -125,7 +125,7 @@ func TestPubSubPublisher_PublishDLQ(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating pubsub client: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	dlqTopic, err := client.CreateTopic(ctx, dlqTopicName)
 	if err != nil {
@@ -208,7 +208,7 @@ func TestPubSubPublisher_StopFlushes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating pubsub client: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	validatedTopic, err := client.CreateTopic(ctx, stopValidatedTopic)
 	if err != nil {

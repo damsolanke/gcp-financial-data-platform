@@ -32,7 +32,7 @@ func setupTestTable(ctx context.Context, t *testing.T, tableID string) {
 	if err != nil {
 		t.Fatalf("creating admin client: %v", err)
 	}
-	defer adminClient.Close()
+	defer func() { _ = adminClient.Close() }()
 
 	// Attempt to create; ignore error if it already exists.
 	_ = adminClient.CreateTable(ctx, tableID)
@@ -81,7 +81,7 @@ func TestBigTableWriter_WriteAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating writer: %v", err)
 	}
-	defer writer.Close()
+	defer func() { _ = writer.Close() }()
 
 	ts := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
 	eventData := []byte(`{"transaction_id":"abc-123","amount_cents":1500}`)
@@ -155,7 +155,7 @@ func TestBigTableWriter_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating writer: %v", err)
 	}
-	defer writer.Close()
+	defer func() { _ = writer.Close() }()
 
 	ts := time.Date(2025, 2, 1, 12, 0, 0, 0, time.UTC)
 	originalData := []byte(`{"transaction_id":"idempotent-1","amount_cents":1000}`)
@@ -200,7 +200,7 @@ func TestBigTableWriter_ColumnFamilies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating writer: %v", err)
 	}
-	defer writer.Close()
+	defer func() { _ = writer.Close() }()
 
 	ts := time.Date(2025, 3, 1, 8, 0, 0, 0, time.UTC)
 	err = writer.WriteEvent(ctx, "usage_metric", "metric-001", ts, []byte(`{"metric_id":"metric-001"}`), map[string]string{
