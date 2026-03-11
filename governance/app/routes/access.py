@@ -135,10 +135,10 @@ async def request_access(request: AccessRequest, req: Request) -> dict:
 
 @router.get("/check/{user_id}/{dataset_id}")
 async def check_user_access(
+    req: Request,
     user_id: str,
     dataset_id: str,
     permission: Permission = Permission.READ,
-    req: Request,
 ) -> AccessCheckResult:
     """Check if a user has access to a specific dataset.
 
