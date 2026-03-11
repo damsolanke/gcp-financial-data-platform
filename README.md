@@ -6,109 +6,90 @@ Production-grade financial data infrastructure on GCP. Five integrated modules �
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph Contract["Shared Schema Contract"]
-        direction LR
-        S1["schemas/revenue_transaction.json"]
-        S2["schemas/usage_metric.json"]
-        S3["schemas/cost_record.json"]
-    end
-
-    subgraph Write["Write Path · Go · <100ms"]
-        IS["Ingestion Service\nHTTP/JSON → validate → fan-out"]
-    end
-
-    subgraph Stream["Event Backbone"]
-        PS["Pub/Sub\n(exactly-once, 7d retention)"]
-        DLQ["Dead Letter Queue\n(30d retention)"]
-    end
-
-    subgraph Hot["Hot Path"]
-        BT["BigTable\n(reverse-timestamp keys\n90d TTL)"]
-    end
-
-    subgraph Batch["Batch Path · Airflow + dbt · daily 02:00 UTC"]
-        AF["Cloud Composer"] --> STG["Staging\n(views)"]
-        STG --> INT["Intermediate\n(ephemeral CTEs)"]
-        INT --> MARTS["Marts\n(partitioned + clustered tables)"]
-        AF --> ANOM["Anomaly Detection\n(2σ rolling 30d)"]
-    end
-
-    subgraph Read["Read Path · FastAPI · <50ms"]
-        GOV["Governance Service"]
-        RBAC["RBAC\n(5 roles, glob patterns)"]
-        AUD["Audit Log\n(7yr retention, SOX)"]
-    end
-
-    subgraph Infra["Storage + DR"]
-        GCS1["GCS Raw\n(US multi-region)"]
-        GCS2["GCS Backup\n(cross-region, lifecycle tiering)"]
-        SNAP["BQ Snapshots\n(daily, 30d)"]
-    end
-
-    Contract -.->|go:embed| IS
-    Contract -.->|Pub/Sub schema| PS
-    Contract -.->|dbt tests| MARTS
-
-    IS -->|valid events| PS
-    IS -->|invalid| DLQ
-    IS -->|best-effort dual write| BT
-    PS -->|daily batch pull| AF
-    MARTS --> GOV
-    GOV --> RBAC
-    GOV --> AUD
-    IS --> GCS1
-    GCS1 -->|Storage Transfer 03:00 UTC| GCS2
-    MARTS --> SNAP
-
-    style Contract fill:#fffde7,stroke:#f9a825,stroke-width:2px
-    style Write fill:#e8f5e9,stroke:#388e3c
-    style Batch fill:#e3f2fd,stroke:#1976d2
-    style Read fill:#fff3e0,stroke:#f57c00
-    style Hot fill:#fce4ec,stroke:#c62828
-    style Infra fill:#f3e5f5,stroke:#7b1fa2
-```
+<p align="center">
+  <img src="docs/images/architecture.png" alt="System Architecture" width="100%">
+</p>
 
 ### Data Paths
 
 | Path | Stack | Latency | What it does |
 |------|-------|---------|-------------|
-| **Write** | Go, Pub/Sub, BigTable | <100ms | Validates events against shared JSON Schema, publishes to Pub/Sub, dual-writes to BigTable. Invalid events go to DLQ. BigTable writes are best-effort — Pub/Sub is the durable backbone. |
-| **Batch** | Airflow, dbt, BigQuery | <30min | Daily MERGE into staging (dedup by event ID), three-layer dbt transforms, anomaly detection (2σ from 30-day rolling average), financial report materialization. |
-| **Read** | FastAPI, RBAC, BigQuery | <50ms | Glob-pattern RBAC (`marts_finance.*`), every access check logged to audit table, IAM sync generates Terraform HCL for BigQuery dataset bindings. |
+| **Write** | Go, Pub/Sub, BigTable | <100ms P99 | Validates events against embedded JSON Schema, publishes to Pub/Sub, dual-writes to BigTable. Invalid events route to DLQ. BigTable writes are best-effort — Pub/Sub is the durable backbone. |
+| **Batch** | Airflow, dbt, BigQuery | ~30min | Daily MERGE into staging (dedup by event ID), three-layer dbt transforms, anomaly detection (2σ from 30-day rolling average), financial report materialization. |
+| **Read** | FastAPI, RBAC, BigQuery | <50ms P99 | Glob-pattern RBAC (`marts_finance.*`), every access check logged to audit table, IAM sync generates Terraform HCL for BigQuery dataset bindings. |
+
+### Event Lifecycle
+
+How a single revenue event flows from API call to governed report:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant G as Go Service
+    participant V as JSON Schema<br/>Validator
+    participant P as Pub/Sub
+    participant B as BigTable
+    participant D as DLQ
+    participant A as Airflow
+    participant T as dbt
+    participant BQ as BigQuery<br/>Marts
+    participant Gov as Governance<br/>RBAC + Audit
+
+    C->>G: POST /api/v1/events
+    G->>V: Validate against<br/>embedded schema
+
+    alt Valid Event
+        V-->>G: ✓ passed
+        G->>P: Publish (exactly-once)
+        P-->>G: message_id
+        G--)B: Best-effort dual write
+        G-->>C: 201 Created
+        Note over P,A: Daily 02:00 UTC
+        A->>P: Pull batch
+        A->>T: MERGE dedup → dbt run
+        T->>BQ: staging → intermediate → marts
+        Gov->>BQ: Governed read (RBAC check)
+        Note over Gov: Audit log written<br/>(7yr SOX retention)
+    else Invalid Event
+        V-->>G: ✗ validation errors
+        G--)D: Publish to DLQ (30d retention)
+        G-->>C: 400 + error details
+    end
+```
 
 ### dbt Lineage
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#E3F2FD', 'primaryTextColor': '#1565C0', 'primaryBorderColor': '#1565C0', 'lineColor': '#555', 'secondaryColor': '#FFF3E0', 'tertiaryColor': '#F3E5F5', 'fontSize': '14px'}}}%%
 flowchart LR
-    subgraph Sources
+    subgraph SRC["Sources · Pub/Sub → BigQuery"]
         R[revenue_transactions]
         U[usage_metrics]
         C[cost_records]
     end
 
-    subgraph Staging["Staging (views)"]
-        SR[stg_revenue_transactions]
-        SU[stg_usage_metrics]
-        SC[stg_cost_records]
+    subgraph STG["Staging · views · dedup + cast"]
+        SR[stg_revenue<br/>_transactions]
+        SU[stg_usage<br/>_metrics]
+        SC[stg_cost<br/>_records]
     end
 
-    subgraph Intermediate["Intermediate (ephemeral)"]
-        IDR[int_daily_revenue]
-        ICU[int_customer_usage_aggregated]
-        ICC[int_cost_by_center]
+    subgraph INT["Intermediate · ephemeral CTEs"]
+        IDR[int_daily<br/>_revenue]
+        ICU[int_customer<br/>_usage_agg]
+        ICC[int_cost<br/>_by_center]
     end
 
-    subgraph Marts["Finance Marts"]
-        FDR[fct_daily_revenue_summary]
-        FMC[fct_monthly_cost_attribution]
-        FRP[fct_revenue_by_product_region]
+    subgraph FIN["Finance Marts · partitioned + clustered"]
+        FDR[fct_daily<br/>_revenue_summary]
+        FMC[fct_monthly<br/>_cost_attribution]
+        FRP[fct_revenue<br/>_by_product_region]
     end
 
-    subgraph Analytics["Analytics Marts"]
-        FCU[fct_customer_usage_report]
-        FUE[fct_unit_economics]
+    subgraph ANA["Analytics Marts"]
+        FCU[fct_customer<br/>_usage_report]
+        FUE[fct_unit<br/>_economics]
     end
 
     R --> SR --> IDR --> FDR & FRP
@@ -116,15 +97,23 @@ flowchart LR
     C --> SC --> ICC --> FMC
     IDR --> FUE
 
-    style Staging fill:#e8f5e9,stroke:#388e3c
-    style Intermediate fill:#fff3e0,stroke:#f57c00
-    style Marts fill:#e3f2fd,stroke:#1976d2
-    style Analytics fill:#f3e5f5,stroke:#7b1fa2
+    style SRC fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
+    style STG fill:#E8F5E9,stroke:#388E3C,stroke-width:2px,color:#1B5E20
+    style INT fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
+    style FIN fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
+    style ANA fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,color:#4A148C
 ```
 
 ## What Ties It Together
 
-One JSON Schema file defines each event type. That schema propagates everywhere:
+One JSON Schema file defines each event type. That single schema propagates everywhere:
+
+```
+schemas/
+├── revenue_transaction.json    ─── Go validates ─── Pub/Sub enforces ─── dbt tests
+├── usage_metric.json           ─── Generator reads ─── Terraform imports
+└── cost_record.json            ─── One change → all five modules know
+```
 
 | Consumer | How it uses the schema |
 |----------|----------------------|
@@ -143,7 +132,7 @@ BenchmarkValidation/usage_metric            295,000 validations/sec    3,389 ns/
 BenchmarkValidation/cost_record             310,000 validations/sec    3,225 ns/op
 ```
 
-Target was 10K events/sec. Actual throughput is 28x that.
+Target was 10K events/sec. Actual throughput is **28x** that.
 
 ## Quick Start
 
@@ -263,7 +252,7 @@ make lint          # All linters across all languages
 | **Durability** | 99.99% | Pub/Sub (durable backbone) + GCS cross-region replication + BQ snapshots |
 | **RTO** | <45 min | Automated restore from BQ snapshots, scripted DR procedure |
 | **RPO** | <1 hr | Daily snapshots at 03:00 UTC, continuous Pub/Sub retention (7d) |
-| **Hot-path latency** | <100ms | Go service + BigTable (P99) |
+| **Hot-path latency** | <100ms P99 | Go service + BigTable |
 | **Batch SLA** | <4 hr | Airflow SLA callback, pipeline completes in ~30 min typical |
 | **Audit retention** | 7 years | SOX/ITGC compliance, BigQuery audit dataset with expiration policies |
 
