@@ -22,87 +22,15 @@ Production-grade financial data infrastructure on GCP. Five integrated modules �
 
 How a single revenue event flows from API call to governed report:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as Client
-    participant G as Go Service
-    participant V as JSON Schema<br/>Validator
-    participant P as Pub/Sub
-    participant B as BigTable
-    participant D as DLQ
-    participant A as Airflow
-    participant T as dbt
-    participant BQ as BigQuery<br/>Marts
-    participant Gov as Governance<br/>RBAC + Audit
-
-    C->>G: POST /api/v1/events
-    G->>V: Validate against<br/>embedded schema
-
-    alt Valid Event
-        V-->>G: ✓ passed
-        G->>P: Publish (exactly-once)
-        P-->>G: message_id
-        G--)B: Best-effort dual write
-        G-->>C: 201 Created
-        Note over P,A: Daily 02:00 UTC
-        A->>P: Pull batch
-        A->>T: MERGE dedup → dbt run
-        T->>BQ: staging → intermediate → marts
-        Gov->>BQ: Governed read (RBAC check)
-        Note over Gov: Audit log written<br/>(7yr SOX retention)
-    else Invalid Event
-        V-->>G: ✗ validation errors
-        G--)D: Publish to DLQ (30d retention)
-        G-->>C: 400 + error details
-    end
-```
+<p align="center">
+  <img src="docs/images/event-lifecycle.png" alt="Event Lifecycle" width="100%">
+</p>
 
 ### dbt Lineage
 
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#E3F2FD', 'primaryTextColor': '#1565C0', 'primaryBorderColor': '#1565C0', 'lineColor': '#555', 'secondaryColor': '#FFF3E0', 'tertiaryColor': '#F3E5F5', 'fontSize': '14px'}}}%%
-flowchart LR
-    subgraph SRC["Sources · Pub/Sub → BigQuery"]
-        R[revenue_transactions]
-        U[usage_metrics]
-        C[cost_records]
-    end
-
-    subgraph STG["Staging · views · dedup + cast"]
-        SR[stg_revenue<br/>_transactions]
-        SU[stg_usage<br/>_metrics]
-        SC[stg_cost<br/>_records]
-    end
-
-    subgraph INT["Intermediate · ephemeral CTEs"]
-        IDR[int_daily<br/>_revenue]
-        ICU[int_customer<br/>_usage_agg]
-        ICC[int_cost<br/>_by_center]
-    end
-
-    subgraph FIN["Finance Marts · partitioned + clustered"]
-        FDR[fct_daily<br/>_revenue_summary]
-        FMC[fct_monthly<br/>_cost_attribution]
-        FRP[fct_revenue<br/>_by_product_region]
-    end
-
-    subgraph ANA["Analytics Marts"]
-        FCU[fct_customer<br/>_usage_report]
-        FUE[fct_unit<br/>_economics]
-    end
-
-    R --> SR --> IDR --> FDR & FRP
-    U --> SU --> ICU --> FCU & FUE
-    C --> SC --> ICC --> FMC
-    IDR --> FUE
-
-    style SRC fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
-    style STG fill:#E8F5E9,stroke:#388E3C,stroke-width:2px,color:#1B5E20
-    style INT fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
-    style FIN fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
-    style ANA fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,color:#4A148C
-```
+<p align="center">
+  <img src="docs/images/dbt-lineage.png" alt="dbt Lineage" width="100%">
+</p>
 
 ## What Ties It Together
 

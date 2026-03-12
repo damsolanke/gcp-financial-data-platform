@@ -251,10 +251,134 @@ def event_lifecycle_diagram():
         ingestion >> Edge(label="invalid", color="#999999", style="dashed") >> dlq
 
 
+def dbt_lineage_diagram():
+    """dbt model lineage: sources -> staging -> intermediate -> marts."""
+    with Diagram(
+        "",
+        filename=os.path.join(OUTPUT_DIR, "dbt-lineage"),
+        outformat="png",
+        show=False,
+        direction="LR",
+        graph_attr={
+            "fontsize": "11",
+            "fontname": FONT,
+            "bgcolor": "#ffffff",
+            "pad": "0.6",
+            "nodesep": "0.5",
+            "ranksep": "1.0",
+            "dpi": "150",
+        },
+        node_attr={"fontsize": "10", "fontname": FONT},
+        edge_attr={"fontsize": "8", "fontname": FONT, "color": "#555555"},
+    ):
+        # Sources
+        with Cluster(
+            "Sources  ·  Pub/Sub -> BigQuery",
+            graph_attr={
+                "bgcolor": "#E8F5E9",
+                "style": "rounded",
+                "fontsize": "11",
+                "fontname": CLUSTER_FONT,
+                "pencolor": "#2E7D32",
+                "penwidth": "2.0",
+            },
+        ):
+            src_rev = PubSub("revenue_transactions")
+            src_usage = PubSub("usage_metrics")
+            src_cost = PubSub("cost_records")
+
+        # Staging
+        with Cluster(
+            "Staging  ·  views  ·  dedup + cast",
+            graph_attr={
+                "bgcolor": "#E8F5E9",
+                "style": "rounded",
+                "fontsize": "11",
+                "fontname": CLUSTER_FONT,
+                "pencolor": "#388E3C",
+                "penwidth": "2.0",
+            },
+        ):
+            stg_rev = BigQuery("stg_revenue\n_transactions")
+            stg_usage = BigQuery("stg_usage\n_metrics")
+            stg_cost = BigQuery("stg_cost\n_records")
+
+        # Intermediate
+        with Cluster(
+            "Intermediate  ·  ephemeral CTEs",
+            graph_attr={
+                "bgcolor": "#FFF3E0",
+                "style": "rounded",
+                "fontsize": "11",
+                "fontname": CLUSTER_FONT,
+                "pencolor": "#E65100",
+                "penwidth": "2.0",
+            },
+        ):
+            int_rev = BigQuery("int_daily\n_revenue")
+            int_usage = BigQuery("int_customer\n_usage_agg")
+            int_cost = BigQuery("int_cost\n_by_center")
+
+        # Finance Marts
+        with Cluster(
+            "Finance Marts  ·  partitioned + clustered",
+            graph_attr={
+                "bgcolor": "#E3F2FD",
+                "style": "rounded",
+                "fontsize": "11",
+                "fontname": CLUSTER_FONT,
+                "pencolor": "#1565C0",
+                "penwidth": "2.0",
+            },
+        ):
+            fct_rev = BigQuery("fct_daily\n_revenue_summary")
+            fct_cost = BigQuery("fct_monthly\n_cost_attribution")
+            fct_prod = BigQuery("fct_revenue\n_by_product_region")
+
+        # Analytics Marts
+        with Cluster(
+            "Analytics Marts",
+            graph_attr={
+                "bgcolor": "#F3E5F5",
+                "style": "rounded",
+                "fontsize": "11",
+                "fontname": CLUSTER_FONT,
+                "pencolor": "#6A1B9A",
+                "penwidth": "2.0",
+            },
+        ):
+            fct_cust = BigQuery("fct_customer\n_usage_report")
+            fct_unit = BigQuery("fct_unit\n_economics")
+
+        # Edges: sources -> staging
+        src_rev >> Edge(color="#2E7D32", penwidth="2.0") >> stg_rev
+        src_usage >> Edge(color="#2E7D32", penwidth="2.0") >> stg_usage
+        src_cost >> Edge(color="#2E7D32", penwidth="2.0") >> stg_cost
+
+        # Edges: staging -> intermediate
+        stg_rev >> Edge(color="#E65100", penwidth="2.0") >> int_rev
+        stg_usage >> Edge(color="#E65100", penwidth="2.0") >> int_usage
+        stg_cost >> Edge(color="#E65100", penwidth="2.0") >> int_cost
+
+        # Edges: intermediate -> finance marts
+        int_rev >> Edge(color="#1565C0", penwidth="2.0") >> fct_rev
+        int_rev >> Edge(color="#1565C0", penwidth="2.0") >> fct_prod
+        int_cost >> Edge(color="#1565C0", penwidth="2.0") >> fct_cost
+
+        # Edges: intermediate -> analytics marts
+        int_usage >> Edge(color="#6A1B9A", penwidth="2.0") >> fct_cust
+        int_usage >> Edge(color="#6A1B9A", penwidth="2.0") >> fct_unit
+
+        # Cross-lineage: int_daily_revenue -> fct_unit_economics
+        int_rev >> Edge(color="#6A1B9A", penwidth="1.5", style="dashed") >> fct_unit
+
+
 if __name__ == "__main__":
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     print("Generating architecture diagram...")
     architecture_diagram()
     print("Generating event lifecycle diagram...")
     event_lifecycle_diagram()
+    print("Generating dbt lineage diagram...")
+    dbt_lineage_diagram()
     print(f"Done. Images in {OUTPUT_DIR}/")
