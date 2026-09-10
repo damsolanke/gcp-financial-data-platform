@@ -6,11 +6,10 @@ correct, secure output aligned with GCP best practices.
 
 from app.models.rbac import Role
 from app.services.iam_sync import (
-    generate_terraform_iam,
     generate_iam_bindings,
+    generate_terraform_iam,
     validate_bindings,
 )
-
 
 # ---------------------------------------------------------------------------
 # Sample service account emails for testing
@@ -170,7 +169,7 @@ class TestValidateBindings:
         assert len(violations) == 1
         assert "primitive role" in violations[0].lower()
 
-    def test_catches_allUsers(self) -> None:
+    def test_catches_all_users(self) -> None:
         """Validator should flag allUsers member."""
         bindings = [
             {
@@ -183,7 +182,7 @@ class TestValidateBindings:
         assert len(violations) >= 1
         assert any("allUsers" in v for v in violations)
 
-    def test_catches_allAuthenticatedUsers(self) -> None:
+    def test_catches_all_authenticated_users(self) -> None:
         """Validator should flag allAuthenticatedUsers member."""
         bindings = [
             {

@@ -4,13 +4,12 @@ Defines the permission matrix that governs who can access what data.
 This is the single source of truth for authorization decisions.
 """
 
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 
 from pydantic import BaseModel
 
 
-class Role(str, Enum):
+class Role(StrEnum):
     """Roles map to job functions, not individuals."""
 
     ADMIN = "admin"
@@ -20,13 +19,13 @@ class Role(str, Enum):
     AUDITOR = "auditor"
 
 
-class Permission(str, Enum):
+class Permission(StrEnum):
     READ = "read"
     WRITE = "write"
     ADMIN = "admin"
 
 
-class AccessDecision(str, Enum):
+class AccessDecision(StrEnum):
     GRANTED = "granted"
     DENIED = "denied"
 
@@ -63,7 +62,7 @@ class User(BaseModel):
     email: str
     role: Role
     is_active: bool = True
-    display_name: Optional[str] = None
+    display_name: str | None = None
 
 
 class AccessRequest(BaseModel):
@@ -83,7 +82,7 @@ class AccessCheckResult(BaseModel):
     permission: Permission
     decision: AccessDecision
     role: Role
-    matched_pattern: Optional[str] = None
+    matched_pattern: str | None = None
 
 
 class AccessGrant(BaseModel):
