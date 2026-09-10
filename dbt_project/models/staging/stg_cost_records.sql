@@ -1,5 +1,6 @@
 -- Staging model for cost records.
--- Deduplicates by record_id, casts types, adds surrogate key.
+-- Deduplicates by record_id (latest ingestion_timestamp wins), parses the
+-- RFC 3339 timestamp via parse_event_timestamp, adds surrogate key.
 -- Source schema: schemas/cost_record.json
 
 WITH source AS (
@@ -19,8 +20,8 @@ deduplicated AS (
 cleaned AS (
     SELECT
         record_id,
-        PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%S%Ez', timestamp) AS event_timestamp,
-        DATE(PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%S%Ez', timestamp)) AS event_date,
+        {{ parse_event_timestamp('timestamp') }} AS event_timestamp,
+        DATE({{ parse_event_timestamp('timestamp') }}) AS event_date,
         cost_center,
         category,
         amount_cents,

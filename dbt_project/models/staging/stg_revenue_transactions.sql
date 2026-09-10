@@ -1,5 +1,6 @@
 -- Staging model for revenue transactions.
--- Deduplicates by transaction_id, casts types, adds surrogate key.
+-- Deduplicates by transaction_id (latest ingestion_timestamp wins), parses the
+-- RFC 3339 timestamp via parse_event_timestamp, adds surrogate key.
 -- Source schema: schemas/revenue_transaction.json
 
 WITH source AS (
@@ -19,8 +20,8 @@ deduplicated AS (
 cleaned AS (
     SELECT
         transaction_id,
-        PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%S%Ez', timestamp) AS event_timestamp,
-        DATE(PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%S%Ez', timestamp)) AS event_date,
+        {{ parse_event_timestamp('timestamp') }} AS event_timestamp,
+        DATE({{ parse_event_timestamp('timestamp') }}) AS event_date,
         amount_cents,
         currency,
         customer_id,
