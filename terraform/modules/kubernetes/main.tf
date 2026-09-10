@@ -9,14 +9,22 @@
 #   4. Automatic bin-packing reduces wasted compute
 #
 # Two services run on this cluster:
-#   - ingestion-service: receives raw financial events, validates them,
-#     publishes to Pub/Sub, and writes to Bigtable
-#   - governance-service: monitors access patterns, enforces data policies,
-#     and writes to the audit dataset
+#   - ingestion-service (port 8080): receives financial events, validates
+#     them against the JSON Schemas, publishes to Pub/Sub, writes to Bigtable
+#   - governance-service (port 8081): RBAC access checks and audit logging
+#
+# Each deployment gets a Kubernetes service account annotated for Workload
+# Identity, a ClusterIP Service, and environment variables wired from the
+# pubsub, bigtable and bigquery modules by the environment root.
 # -----------------------------------------------------------------------------
 
 locals {
   cluster_name = "fdp-${var.environment}-cluster"
+
+  # Image references follow the CD workflow (.github/workflows/cd.yml), which
+  # pushes ${ARTIFACT_REGISTRY_REPO}/<service>:<short-sha> and :latest.
+  ingestion_image  = "${var.artifact_registry_repo}/ingestion-service:${var.image_tag}"
+  governance_image = "${var.artifact_registry_repo}/governance-service:${var.image_tag}"
 
   common_labels = merge(var.labels, {
     environment = var.environment
@@ -100,11 +108,46 @@ resource "kubernetes_namespace_v1" "data_services" {
 }
 
 # ---------------------------------------------------------------------------
+# Kubernetes Service Accounts (Workload Identity)
+# ---------------------------------------------------------------------------
+# The IAM module binds roles/iam.workloadIdentityUser on each GCP service
+# account to the Kubernetes service account data-services/<name>. The
+# iam.gke.io/gcp-service-account annotation lives on the KSA (not the pod),
+# which is what GKE reads to mint credentials for pods using that KSA.
+
+resource "kubernetes_service_account_v1" "ingestion" {
+  metadata {
+    name      = "ingestion-service"
+    namespace = kubernetes_namespace_v1.data_services.metadata[0].name
+    labels = {
+      app = "ingestion-service"
+    }
+    annotations = {
+      "iam.gke.io/gcp-service-account" = var.ingestion_sa_email
+    }
+  }
+}
+
+resource "kubernetes_service_account_v1" "governance" {
+  metadata {
+    name      = "governance-service"
+    namespace = kubernetes_namespace_v1.data_services.metadata[0].name
+    labels = {
+      app = "governance-service"
+    }
+    annotations = {
+      "iam.gke.io/gcp-service-account" = var.governance_sa_email
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Ingestion Service Deployment
 # ---------------------------------------------------------------------------
 # The ingestion service is the entry point for all financial data. It receives
-# events via HTTP/gRPC, validates them against the schema, and publishes
-# validated events to Pub/Sub while writing to Bigtable for deduplication.
+# events over HTTP, validates them against the JSON Schemas, publishes
+# validated events to Pub/Sub and writes them to Bigtable (best-effort).
+# Configuration matches ingestion-service/cmd/server/main.go loadConfig().
 
 resource "kubernetes_deployment_v1" "ingestion_service" {
   metadata {
@@ -133,21 +176,14 @@ resource "kubernetes_deployment_v1" "ingestion_service" {
           app         = "ingestion-service"
           environment = var.environment
         }
-        annotations = {
-          # Workload Identity annotation tells GKE to provide the pod with
-          # credentials for the specified GCP service account.
-          "iam.gke.io/gcp-service-account" = var.ingestion_sa_email
-        }
       }
 
       spec {
-        # The Kubernetes service account name must match the Workload Identity
-        # binding created in the IAM module.
-        service_account_name = "ingestion-service"
+        service_account_name = kubernetes_service_account_v1.ingestion.metadata[0].name
 
         container {
           name  = "ingestion-service"
-          image = "gcr.io/${var.project_id}/ingestion-service:latest"
+          image = local.ingestion_image
 
           # Resource requests are set to match typical steady-state usage.
           # Limits are 2x requests to handle brief spikes without OOMKill.
@@ -168,17 +204,47 @@ resource "kubernetes_deployment_v1" "ingestion_service" {
           }
 
           env {
-            name  = "GCP_PROJECT_ID"
+            name  = "PORT"
+            value = "8080"
+          }
+
+          env {
+            name  = "LOG_LEVEL"
+            value = var.log_level
+          }
+
+          env {
+            name  = "PUBSUB_PROJECT_ID"
             value = var.project_id
           }
 
           env {
-            name  = "ENVIRONMENT"
-            value = var.environment
+            name  = "PUBSUB_TOPIC_VALIDATED"
+            value = var.pubsub_validated_topic
           }
 
-          # Liveness probe detects deadlocked processes. If the service stops
-          # responding for 30 seconds (3 * 10s), Kubernetes restarts the pod.
+          env {
+            name  = "PUBSUB_TOPIC_DLQ"
+            value = var.pubsub_dlq_topic
+          }
+
+          env {
+            name  = "BIGTABLE_PROJECT_ID"
+            value = var.project_id
+          }
+
+          env {
+            name  = "BIGTABLE_INSTANCE_ID"
+            value = var.bigtable_instance_name
+          }
+
+          env {
+            name  = "BIGTABLE_TABLE_ID"
+            value = var.bigtable_table_name
+          }
+
+          # The service exposes a single GET /healthz endpoint (see
+          # internal/handler/events.go); both probes use it.
           liveness_probe {
             http_get {
               path = "/healthz"
@@ -190,13 +256,9 @@ resource "kubernetes_deployment_v1" "ingestion_service" {
             failure_threshold     = 3
           }
 
-          # Readiness probe controls whether the pod receives traffic. A pod
-          # that fails readiness is removed from the Service endpoint until
-          # it recovers. This prevents sending traffic to pods that are still
-          # warming up or experiencing transient issues.
           readiness_probe {
             http_get {
-              path = "/readyz"
+              path = "/healthz"
               port = 8080
             }
             initial_delay_seconds = 5
@@ -215,9 +277,9 @@ resource "kubernetes_deployment_v1" "ingestion_service" {
 # ---------------------------------------------------------------------------
 # Governance Service Deployment
 # ---------------------------------------------------------------------------
-# The governance service monitors data access patterns, enforces retention
-# policies, and writes audit events. It runs alongside the ingestion service
-# but has different network access requirements (BigQuery only).
+# The governance service evaluates RBAC access checks and records audit
+# events. It listens on 8081 (governance/Dockerfile, app/config.py) and only
+# needs BigQuery access. Configuration matches governance/app/config.py.
 
 resource "kubernetes_deployment_v1" "governance_service" {
   metadata {
@@ -244,17 +306,14 @@ resource "kubernetes_deployment_v1" "governance_service" {
           app         = "governance-service"
           environment = var.environment
         }
-        annotations = {
-          "iam.gke.io/gcp-service-account" = var.governance_sa_email
-        }
       }
 
       spec {
-        service_account_name = "governance-service"
+        service_account_name = kubernetes_service_account_v1.governance.metadata[0].name
 
         container {
           name  = "governance-service"
-          image = "gcr.io/${var.project_id}/governance-service:latest"
+          image = local.governance_image
 
           resources {
             requests = {
@@ -268,13 +327,18 @@ resource "kubernetes_deployment_v1" "governance_service" {
           }
 
           port {
-            container_port = 8080
+            container_port = 8081
             name           = "http"
           }
 
           env {
-            name  = "GCP_PROJECT_ID"
-            value = var.project_id
+            name  = "PORT"
+            value = "8081"
+          }
+
+          env {
+            name  = "LOG_LEVEL"
+            value = var.log_level
           }
 
           env {
@@ -282,10 +346,21 @@ resource "kubernetes_deployment_v1" "governance_service" {
             value = var.environment
           }
 
+          env {
+            name  = "BIGQUERY_PROJECT_ID"
+            value = var.project_id
+          }
+
+          env {
+            name  = "BIGQUERY_DATASET_AUDIT"
+            value = var.audit_dataset_id
+          }
+
+          # GET /healthz is the only health endpoint (governance/app/main.py).
           liveness_probe {
             http_get {
               path = "/healthz"
-              port = 8080
+              port = 8081
             }
             initial_delay_seconds = 15
             period_seconds        = 10
@@ -295,8 +370,8 @@ resource "kubernetes_deployment_v1" "governance_service" {
 
           readiness_probe {
             http_get {
-              path = "/readyz"
-              port = 8080
+              path = "/healthz"
+              port = 8081
             }
             initial_delay_seconds = 5
             period_seconds        = 10
@@ -309,6 +384,65 @@ resource "kubernetes_deployment_v1" "governance_service" {
   }
 
   depends_on = [kubernetes_namespace_v1.data_services]
+}
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+# ClusterIP services give each deployment a stable in-cluster address
+# (<name>.data-services.svc.cluster.local). Exposure beyond the cluster
+# (ingress, load balancer) is intentionally left to the surrounding platform.
+
+resource "kubernetes_service_v1" "ingestion" {
+  metadata {
+    name      = "ingestion-service"
+    namespace = kubernetes_namespace_v1.data_services.metadata[0].name
+    labels = {
+      app         = "ingestion-service"
+      environment = var.environment
+    }
+  }
+
+  spec {
+    type = "ClusterIP"
+
+    selector = {
+      app = "ingestion-service"
+    }
+
+    port {
+      name        = "http"
+      port        = 80
+      target_port = "http"
+      protocol    = "TCP"
+    }
+  }
+}
+
+resource "kubernetes_service_v1" "governance" {
+  metadata {
+    name      = "governance-service"
+    namespace = kubernetes_namespace_v1.data_services.metadata[0].name
+    labels = {
+      app         = "governance-service"
+      environment = var.environment
+    }
+  }
+
+  spec {
+    type = "ClusterIP"
+
+    selector = {
+      app = "governance-service"
+    }
+
+    port {
+      name        = "http"
+      port        = 80
+      target_port = "http"
+      protocol    = "TCP"
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------
