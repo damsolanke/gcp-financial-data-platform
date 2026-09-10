@@ -50,9 +50,16 @@ func NewBigTableWriter(ctx context.Context, projectID, instanceID, tableID strin
 	}, nil
 }
 
-// RowKey constructs a Bigtable row key that sorts events in reverse chronological
-// order within each event type. The reverse timestamp is zero-padded to 13 digits
-// for consistent lexicographic ordering.
+// RowKey constructs the Bigtable row key for an event:
+//
+//	{event_type}#{reverse_ts}#{event_id}
+//
+// where reverse_ts = math.MaxInt64 - event timestamp in Unix milliseconds,
+// formatted with at least 13 digits (19 in practice for any date before the
+// year 2262). Equal-width digits keep lexicographic order equal to numeric
+// order, so within an event-type prefix the newest event sorts first and a
+// prefix scan returns recent events without a sort. scripts/seed_bigtable.py
+// and docs/data_model.md describe the same key.
 func RowKey(eventType string, timestamp time.Time, eventID string) string {
 	reverseTS := math.MaxInt64 - timestamp.UnixMilli()
 	return fmt.Sprintf("%s#%013d#%s", eventType, reverseTS, eventID)
