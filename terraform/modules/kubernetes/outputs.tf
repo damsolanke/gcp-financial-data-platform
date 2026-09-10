@@ -14,3 +14,26 @@ output "cluster_ca_certificate" {
   value       = google_container_cluster.primary.master_auth[0].cluster_ca_certificate
   sensitive   = true
 }
+
+output "namespace" {
+  description = "Namespace the platform workloads run in."
+  value       = kubernetes_namespace_v1.data_services.metadata[0].name
+}
+
+output "ingestion_service_dns" {
+  description = "In-cluster DNS name of the ingestion service (port 80 -> container 8080)."
+  value       = "${kubernetes_service_v1.ingestion.metadata[0].name}.${kubernetes_namespace_v1.data_services.metadata[0].name}.svc.cluster.local"
+}
+
+output "governance_service_dns" {
+  description = "In-cluster DNS name of the governance service (port 80 -> container 8081)."
+  value       = "${kubernetes_service_v1.governance.metadata[0].name}.${kubernetes_namespace_v1.data_services.metadata[0].name}.svc.cluster.local"
+}
+
+output "images" {
+  description = "Container image references deployed for each service."
+  value = {
+    ingestion  = local.ingestion_image
+    governance = local.governance_image
+  }
+}
