@@ -43,21 +43,22 @@ Before executing any recovery steps, confirm the following:
 ### 1.1 Identify Affected Datasets
 
 ```bash
-# Check BigQuery dataset health -- count rows in each staging table
+# Datasets follow fdp_<env>_<layer> (terraform/modules/bigquery). Count rows in
+# each raw landing table -- the replay source for every dbt model.
 bq query --use_legacy_sql=false \
   "SELECT table_id, row_count, size_bytes
-   FROM staging.__TABLES__
+   FROM fdp_prod_raw.__TABLES__
    ORDER BY table_id"
 
 # Check mart tables
 bq query --use_legacy_sql=false \
   "SELECT table_id, row_count, size_bytes
-   FROM marts_finance.__TABLES__
+   FROM fdp_prod_marts_finance.__TABLES__
    ORDER BY table_id"
 
 bq query --use_legacy_sql=false \
   "SELECT table_id, row_count, size_bytes
-   FROM marts_analytics.__TABLES__
+   FROM fdp_prod_marts_analytics.__TABLES__
    ORDER BY table_id"
 ```
 
@@ -69,9 +70,9 @@ bq ls --format=json fdp_prod_snapshots | jq '.[] | {tableId: .tableReference.tab
 
 # Check the last successful pipeline run
 bq query --use_legacy_sql=false \
-  "SELECT dag_id, run_id, start_time, end_time, status
-   FROM audit.pipeline_audit_log
-   ORDER BY end_time DESC
+  "SELECT dag_id, run_id, started_at, finished_at, status
+   FROM fdp_prod_audit.pipeline_audit_log
+   ORDER BY started_at DESC
    LIMIT 10"
 ```
 
@@ -105,7 +106,7 @@ ETA to recovery: 45 minutes"
 
 ```bash
 # Disable the daily pipeline to prevent it from overwriting restored data
-gcloud composer environments run prod-composer \
+gcloud composer environments run fdp-composer-prod \
   --location=us-central1 \
   dags pause -- financial_pipeline_daily
 ```
@@ -114,17 +115,17 @@ gcloud composer environments run prod-composer \
 
 ```bash
 # Scale the ingestion service to 0 to stop writes
-kubectl scale deployment ingestion-service --replicas=0 -n financial-data
+kubectl scale deployment ingestion-service --replicas=0 -n data-services
 
 # Verify no pods are running
-kubectl get pods -n financial-data -l app=ingestion-service
+kubectl get pods -n data-services -l app=ingestion-service
 ```
 
 ### 2.3 Note Current Pub/Sub Position
 
 ```bash
 # Record current subscription position for replay reference
-gcloud pubsub subscriptions describe financial-events-validated-sub \
+gcloud pubsub subscriptions describe financial-events-validated-sub-prod \
   --format="json(ackDeadlineSeconds, messageRetentionDuration, pushConfig)"
 ```
 
@@ -134,7 +135,7 @@ gcloud pubsub subscriptions describe financial-events-validated-sub \
 
 ### 3.1 Restore from Dataset Snapshot
 
-BigQuery snapshot restore is a metadata operation -- it completes in seconds regardless of data size.
+BigQuery table copy from a snapshot is a metadata operation -- it completes in seconds regardless of data size. Snapshots land in `fdp_<env>_snapshots` as `<table>_snapshot_<run_date>` (terraform/modules/disaster_recovery). Restore the raw landing tables and the marts; the `fdp_<env>_staging` views are rebuilt by `dbt run`.
 
 ```bash
 # Set variables
@@ -142,27 +143,27 @@ SNAPSHOT_DATE="20260310"  # Replace with last known good date
 PROJECT="your-project-id"
 ENVIRONMENT="prod"
 
-# Restore staging tables
-for TABLE in stg_revenue_transactions stg_usage_metrics stg_cost_records; do
-  echo "Restoring staging.${TABLE} from snapshot ${SNAPSHOT_DATE}..."
+# Restore raw landing tables
+for TABLE in raw_revenue_transactions raw_usage_metrics raw_cost_records; do
+  echo "Restoring fdp_${ENVIRONMENT}_raw.${TABLE} from snapshot ${SNAPSHOT_DATE}..."
   bq cp --force \
-    "fdp_${ENVIRONMENT}_snapshots.staging_snapshot_${SNAPSHOT_DATE}.${TABLE}" \
-    "${PROJECT}:staging.${TABLE}"
+    "${PROJECT}:fdp_${ENVIRONMENT}_snapshots.${TABLE}_snapshot_${SNAPSHOT_DATE}" \
+    "${PROJECT}:fdp_${ENVIRONMENT}_raw.${TABLE}"
 done
 
 # Restore mart tables
 for TABLE in fct_daily_revenue_summary fct_monthly_cost_attribution fct_revenue_by_product_region; do
-  echo "Restoring marts_finance.${TABLE} from snapshot ${SNAPSHOT_DATE}..."
+  echo "Restoring fdp_${ENVIRONMENT}_marts_finance.${TABLE} from snapshot ${SNAPSHOT_DATE}..."
   bq cp --force \
-    "fdp_${ENVIRONMENT}_snapshots.marts_finance_snapshot_${SNAPSHOT_DATE}.${TABLE}" \
-    "${PROJECT}:marts_finance.${TABLE}"
+    "${PROJECT}:fdp_${ENVIRONMENT}_snapshots.${TABLE}_snapshot_${SNAPSHOT_DATE}" \
+    "${PROJECT}:fdp_${ENVIRONMENT}_marts_finance.${TABLE}"
 done
 
 for TABLE in fct_customer_usage_report fct_unit_economics; do
-  echo "Restoring marts_analytics.${TABLE} from snapshot ${SNAPSHOT_DATE}..."
+  echo "Restoring fdp_${ENVIRONMENT}_marts_analytics.${TABLE} from snapshot ${SNAPSHOT_DATE}..."
   bq cp --force \
-    "fdp_${ENVIRONMENT}_snapshots.marts_analytics_snapshot_${SNAPSHOT_DATE}.${TABLE}" \
-    "${PROJECT}:marts_analytics.${TABLE}"
+    "${PROJECT}:fdp_${ENVIRONMENT}_snapshots.${TABLE}_snapshot_${SNAPSHOT_DATE}" \
+    "${PROJECT}:fdp_${ENVIRONMENT}_marts_analytics.${TABLE}"
 done
 ```
 
@@ -175,8 +176,8 @@ If the data was corrupted or deleted within the last 7 days, BigQuery time trave
 RESTORE_TIMESTAMP="2026-03-10 02:00:00 UTC"
 
 bq cp --force \
-  "staging.stg_revenue_transactions@$(date -d "${RESTORE_TIMESTAMP}" +%s000)" \
-  "staging.stg_revenue_transactions"
+  "fdp_prod_raw.raw_revenue_transactions@$(date -d "${RESTORE_TIMESTAMP}" +%s000)" \
+  "fdp_prod_raw.raw_revenue_transactions"
 ```
 
 ### 3.3 Verify Row Counts
@@ -184,17 +185,17 @@ bq cp --force \
 ```bash
 # Compare restored data against pre-incident baselines
 bq query --use_legacy_sql=false \
-  "SELECT 'staging.stg_revenue_transactions' AS table_name, COUNT(*) AS row_count
-   FROM staging.stg_revenue_transactions
+  "SELECT 'fdp_prod_raw.raw_revenue_transactions' AS table_name, COUNT(*) AS row_count
+   FROM fdp_prod_raw.raw_revenue_transactions
    UNION ALL
-   SELECT 'staging.stg_usage_metrics', COUNT(*)
-   FROM staging.stg_usage_metrics
+   SELECT 'fdp_prod_raw.raw_usage_metrics', COUNT(*)
+   FROM fdp_prod_raw.raw_usage_metrics
    UNION ALL
-   SELECT 'staging.stg_cost_records', COUNT(*)
-   FROM staging.stg_cost_records
+   SELECT 'fdp_prod_raw.raw_cost_records', COUNT(*)
+   FROM fdp_prod_raw.raw_cost_records
    UNION ALL
-   SELECT 'marts_finance.fct_daily_revenue_summary', COUNT(*)
-   FROM marts_finance.fct_daily_revenue_summary"
+   SELECT 'fdp_prod_marts_finance.fct_daily_revenue_summary', COUNT(*)
+   FROM fdp_prod_marts_finance.fct_daily_revenue_summary"
 ```
 
 ---
@@ -255,7 +256,7 @@ If events were lost between the last snapshot and the incident, replay from Pub/
 # Seek to the last successfully processed timestamp
 REPLAY_TIMESTAMP="2026-03-10T02:00:00Z"
 
-gcloud pubsub subscriptions seek financial-events-validated-sub \
+gcloud pubsub subscriptions seek financial-events-validated-sub-prod \
   --time="${REPLAY_TIMESTAMP}"
 ```
 
@@ -263,7 +264,7 @@ gcloud pubsub subscriptions seek financial-events-validated-sub \
 
 ```bash
 # Check if any messages ended up in the DLQ during the incident
-gcloud pubsub subscriptions pull financial-events-dead-letter-sub \
+gcloud pubsub subscriptions pull financial-events-dlq-sub-prod \
   --limit=10 \
   --auto-ack=false
 ```
@@ -272,7 +273,7 @@ gcloud pubsub subscriptions pull financial-events-dead-letter-sub \
 
 ```bash
 # Monitor subscription backlog as messages are reprocessed
-watch -n 5 'gcloud pubsub subscriptions describe financial-events-validated-sub \
+watch -n 5 'gcloud pubsub subscriptions describe financial-events-validated-sub-prod \
   --format="value(numUndeliveredMessages)"'
 ```
 
@@ -283,8 +284,8 @@ watch -n 5 'gcloud pubsub subscriptions describe financial-events-validated-sub 
 ### 6.1 Run dbt Tests
 
 ```bash
-# Run the full dbt test suite against restored data
-cd dbt_project && dbt test --profiles-dir . --target prod
+# Rebuild the staging views and marts from the restored raw tables, then test
+cd dbt_project && dbt run --profiles-dir . --target prod && dbt test --profiles-dir . --target prod
 ```
 
 ### 6.2 Verify Data Quality
@@ -293,24 +294,24 @@ cd dbt_project && dbt test --profiles-dir . --target prod
 # Check for revenue non-negativity
 bq query --use_legacy_sql=false \
   "SELECT COUNT(*) AS negative_revenue_rows
-   FROM marts_finance.fct_daily_revenue_summary
+   FROM fdp_prod_marts_finance.fct_daily_revenue_summary
    WHERE total_revenue_usd < 0"
 
 # Check for date completeness (no gaps)
 bq query --use_legacy_sql=false \
   "WITH date_range AS (
      SELECT MIN(revenue_date) AS min_date, MAX(revenue_date) AS max_date
-     FROM marts_finance.fct_daily_revenue_summary
+     FROM fdp_prod_marts_finance.fct_daily_revenue_summary
    )
    SELECT DATE_DIFF(max_date, min_date, DAY) + 1 AS expected_days,
           COUNT(DISTINCT revenue_date) AS actual_days
-   FROM marts_finance.fct_daily_revenue_summary, date_range"
+   FROM fdp_prod_marts_finance.fct_daily_revenue_summary, date_range"
 
 # Check referential integrity
 bq query --use_legacy_sql=false \
   "SELECT COUNT(*) AS orphan_usage_records
-   FROM staging.stg_usage_metrics u
-   LEFT JOIN staging.stg_revenue_transactions r ON u.customer_id = r.customer_id
+   FROM fdp_prod_staging.stg_usage_metrics u
+   LEFT JOIN fdp_prod_staging.stg_revenue_transactions r ON u.customer_id = r.customer_id
    WHERE r.customer_id IS NULL"
 ```
 
@@ -318,18 +319,19 @@ bq query --use_legacy_sql=false \
 
 ```bash
 # Scale ingestion service back up
-kubectl scale deployment ingestion-service --replicas=2 -n financial-data
+kubectl scale deployment ingestion-service --replicas=2 -n data-services
 
-# Verify health check passes
-kubectl exec -it deployment/ingestion-service -n financial-data -- wget -qO- http://localhost:8080/healthz
+# Verify health check passes (the image is distroless, so port-forward instead of exec)
+kubectl port-forward deployment/ingestion-service -n data-services 8080:8080 &
+curl -sf http://localhost:8080/healthz
 
 # Unpause Airflow DAG
-gcloud composer environments run prod-composer \
+gcloud composer environments run fdp-composer-prod \
   --location=us-central1 \
   dags unpause -- financial_pipeline_daily
 
 # Trigger a manual DAG run to process any data accumulated during the outage
-gcloud composer environments run prod-composer \
+gcloud composer environments run fdp-composer-prod \
   --location=us-central1 \
   dags trigger -- financial_pipeline_daily
 ```
@@ -410,7 +412,7 @@ Complete within 48 hours of recovery:
 - [ ] **Prevention measures**: What changes prevent recurrence?
 - [ ] **Action items assigned**: Each improvement has an owner and due date
 - [ ] **Post-incident review meeting held**: All relevant stakeholders attended
-- [ ] **Audit log updated**: Incident and recovery details recorded in `audit.pipeline_audit_log`
+- [ ] **Audit log updated**: Incident and recovery details recorded in `fdp_prod_audit.pipeline_audit_log`
 
 ---
 
@@ -418,7 +420,7 @@ Complete within 48 hours of recovery:
 
 | Component | Backup Mechanism | RPO | Restore Time |
 |-----------|-----------------|-----|-------------|
-| BigQuery datasets | Daily snapshots (Data Transfer Service) | <24 hours | <1 minute (metadata operation) |
+| BigQuery datasets (`fdp_<env>_raw`, staging, marts, audit) | Daily copies into `fdp_<env>_snapshots` (Data Transfer Service) | <24 hours | <1 minute (metadata operation) |
 | BigQuery tables | Time travel (7-day window) | Point-in-time | <1 minute |
 | GCS raw bucket | Cross-region replication (daily 03:00 UTC) | <24 hours | ~10 minutes (depends on size) |
 | GCS objects | Object versioning | Point-in-time | <1 minute per object |
@@ -426,4 +428,4 @@ Complete within 48 hours of recovery:
 | BigTable data | Replicated from Pub/Sub (rebuild from source) | <1 hour | ~30 minutes (replay events) |
 | Airflow DAGs | Git repository (source of truth) | Point-in-time | <5 minutes (git pull + deploy) |
 | dbt models | Git repository (source of truth) | Point-in-time | <5 minutes (git pull + dbt run) |
-| Terraform state | GCS backend with versioning | Point-in-time | <5 minutes |
+| Terraform state (prod) | GCS backend (bucket supplied via -backend-config) | Point-in-time | <5 minutes |
