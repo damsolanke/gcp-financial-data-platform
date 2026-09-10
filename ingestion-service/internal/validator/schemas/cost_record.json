@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/adesolanke/gcp-financial-data-platform/schemas/cost_record.json",
+  "$id": "https://github.com/damsolanke/gcp-financial-data-platform/schemas/cost_record.json",
   "title": "Cost Record",
   "description": "An internal cost record tracking operational expenditure by cost center.",
   "type": "object",

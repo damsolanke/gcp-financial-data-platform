@@ -11,10 +11,10 @@ import (
 
 	"github.com/rs/zerolog"
 
-	btwriter "github.com/adesolanke/gcp-financial-data-platform/ingestion-service/internal/bigtable"
-	"github.com/adesolanke/gcp-financial-data-platform/ingestion-service/internal/metrics"
-	"github.com/adesolanke/gcp-financial-data-platform/ingestion-service/internal/publisher"
-	"github.com/adesolanke/gcp-financial-data-platform/ingestion-service/internal/validator"
+	btwriter "github.com/damsolanke/gcp-financial-data-platform/ingestion-service/internal/bigtable"
+	"github.com/damsolanke/gcp-financial-data-platform/ingestion-service/internal/metrics"
+	"github.com/damsolanke/gcp-financial-data-platform/ingestion-service/internal/publisher"
+	"github.com/damsolanke/gcp-financial-data-platform/ingestion-service/internal/validator"
 )
 
 const maxBodySize = 1 << 20 // 1 MB
