@@ -54,10 +54,12 @@ resource "google_composer_environment" "main" {
       }
 
       # Environment variables available to all DAGs. These avoid hardcoding
-      # project and dataset references in DAG code.
+      # project and dataset references in DAG code; dags/financial_pipeline_daily.py
+      # reads GCP_PROJECT_ID, ENVIRONMENT and BQ_DATASET_* from here.
       env_variables = {
         GCP_PROJECT_ID             = var.project_id
         ENVIRONMENT                = var.environment
+        BQ_DATASET_RAW             = "fdp_${var.environment}_raw"
         BQ_DATASET_STAGING         = "fdp_${var.environment}_staging"
         BQ_DATASET_INTERMEDIATE    = "fdp_${var.environment}_intermediate"
         BQ_DATASET_MARTS_FINANCE   = "fdp_${var.environment}_marts_finance"
