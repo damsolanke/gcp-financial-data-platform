@@ -405,19 +405,21 @@ Every Airflow DAG execution.
 
 ### anomaly_alerts
 
-Statistical outliers detected by the anomaly detection operator.
+Statistical outliers in total daily revenue detected by `AnomalyDetectionOperator` (`orchestration/plugins/operators/anomaly_detection_operator.py`). One row per flagged `revenue_date`. This is the single definition shared by the operator's INSERT, `terraform/modules/bigquery` (`google_bigquery_table.anomaly_alerts`, partitioned by `detected_at`) and this document.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `alert_id` | STRING (UUID) | Auto-generated unique identifier |
-| `detected_at` | TIMESTAMP | When the anomaly was detected |
-| `source_table` | STRING | Table that was analyzed |
-| `metric_name` | STRING | Which metric deviated |
-| `metric_value` | NUMERIC | Observed value |
-| `expected_mean` | NUMERIC | 30-day rolling mean |
-| `expected_stddev` | NUMERIC | 30-day rolling standard deviation |
-| `deviation_sigma` | NUMERIC | Number of standard deviations from mean |
-| `severity` | STRING | `warning` (>2 sigma) or `critical` (>3 sigma) |
+| Field | Type | Mode | Description |
+|-------|------|------|-------------|
+| `alert_id` | STRING (UUID) | REQUIRED | Generated per alert |
+| `detected_at` | TIMESTAMP | REQUIRED | When the operator ran (partition column) |
+| `revenue_date` | DATE | REQUIRED | The day whose revenue was flagged |
+| `alert_type` | STRING | REQUIRED | `spike` (above rolling average) or `drop` (below) |
+| `severity` | STRING | REQUIRED | `warning` (> threshold, default 2 sigma) or `critical` (> 3 sigma) |
+| `source_table` | STRING | REQUIRED | Table analysed, e.g. `fdp_prod_marts_finance.fct_daily_revenue_summary` |
+| `daily_revenue` | FLOAT64 | REQUIRED | Observed `SUM(total_revenue_usd)` for the day |
+| `rolling_avg` | FLOAT64 | REQUIRED | Rolling mean over the lookback window (default 30 days) |
+| `rolling_stddev` | FLOAT64 | REQUIRED | Rolling standard deviation over the same window |
+| `deviation_sigma` | FLOAT64 | REQUIRED | `ABS(daily_revenue - rolling_avg) / rolling_stddev` |
+| `dag_run_id` | STRING | NULLABLE | Airflow run that produced the alert |
 
 ---
 
