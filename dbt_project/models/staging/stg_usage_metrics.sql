@@ -25,7 +25,6 @@ cleaned AS (
         metric_type,
         quantity,
         unit,
-        metadata,
         {{ dbt_utils.generate_surrogate_key(['metric_id']) }} AS surrogate_key,
         ingestion_timestamp,
         'pubsub_ingestion' AS source_system
