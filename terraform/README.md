@@ -1,6 +1,6 @@
 # GCP Financial Data Platform - Terraform Infrastructure
 
-Infrastructure-as-code for the GCP Financial Data Platform. This Terraform codebase provisions and manages all cloud resources across development and production environments.
+Infrastructure-as-code for the GCP Financial Data Platform. Eight modules provision the cloud resources for the dev and prod environment roots. Every module passes `terraform fmt -check` and `terraform validate` in CI with the provider versions pinned in each module's `.terraform.lock.hcl`; nothing is applied from CI.
 
 ## Architecture Overview
 
@@ -19,10 +19,10 @@ GCS (raw bucket) --> Pub/Sub notification --> Ingestion Service (GKE)
     |                                     Bigtable (low-latency lookups)
     |                                              |
     v                                              v
-BigQuery: staging --> intermediate --> marts_finance / marts_analytics
-                                              |
-                                              v
-                                      Audit dataset
+BigQuery (fdp_<env>_<layer>): raw --> staging --> marts_finance / marts_analytics
+                                                        |
+                                                        v
+                                                Audit dataset
 ```
 
 Orchestration is handled by Cloud Composer (managed Airflow), which triggers dbt transformations and data quality checks.
@@ -58,17 +58,20 @@ terraform/
 
 ### bigquery
 
-Provisions the analytical data warehouse with 5 datasets following the dbt medallion pattern:
+Provisions the analytical warehouse. Every dataset is `fdp_<env>_<layer>`, the same names dbt, the Airflow DAG and the governance service use:
 
-| Dataset | Purpose |
-|---------|---------|
-| `staging` | Landing zone for validated events with lineage columns |
-| `intermediate` | Cleaned/joined data (internal to dbt, not analyst-facing) |
-| `marts_finance` | Revenue summaries, cost attribution, product-region breakdowns |
-| `marts_analytics` | Customer usage reports, unit economics |
-| `audit` | Access logs, permission changes, anomaly alerts, pipeline runs |
+| Dataset | Tables defined here | Purpose |
+|---------|--------------------|---------|
+| `fdp_<env>_raw` | `raw_revenue_transactions`, `raw_usage_metrics`, `raw_cost_records` | Landing tables: JSON Schema properties + `ingestion_timestamp`; MERGE target of the DAG, dbt `raw` source |
+| `fdp_<env>_staging` | none (dbt views) | `stg_*` views that parse and dedupe the raw tables |
+| `fdp_<env>_intermediate` | none | Intermediate models are ephemeral; dataset kept for ad-hoc use |
+| `fdp_<env>_marts_finance` | `fct_*` shells | Revenue summaries, cost attribution, product-region breakdowns (dbt-built) |
+| `fdp_<env>_marts_analytics` | `fct_*` shells | Customer usage reports, unit economics (dbt-built) |
+| `fdp_<env>_audit` | `access_log`, `permission_changes`, `anomaly_alerts`, `pipeline_audit_log` | Audit trail; `anomaly_alerts` is written by the Airflow operator and shares its schema with `docs/data_model.md` |
 
-Finance mart tables are partitioned by date and clustered by `product_line` and `region` for query cost optimization. An authorized view implements row-level security for region-scoped analyst access.
+`fdp_<env>_seeds` is created by `dbt seed`, `fdp_<env>_snapshots` by the disaster_recovery module.
+
+Finance mart tables are partitioned by date and clustered by `product_line` and `region`. An authorized view sketches region-scoped analyst access. Note: the mart table shells declare a column set that differs from the dbt models that will `CREATE OR REPLACE` them; reconciling them is a documented follow-up.
 
 ### bigtable
 
@@ -82,12 +85,12 @@ An app profile enables single-row transactions for deduplication via check-and-m
 
 ### pubsub
 
-Provisions the event streaming backbone with schema enforcement, exactly-once delivery, and a dead-letter queue:
+Provisions the event streaming backbone with exactly-once delivery and a dead-letter queue:
 
-- Validated events topic with Avro schema enforcement
+- Validated events topic (`financial-events-validated-<env>`); no topic schema on purpose -- the ingestion service enforces `schemas/*.json` and `modules/pubsub/README.md` explains why
 - Dead-letter topic for failed messages (30-day retention)
-- Exponential backoff retry policy (10s-600s)
-- Message ordering by partition key for stateful processing
+- Exponential backoff retry policy (10s-600s), 5 delivery attempts before dead-lettering
+- Message ordering enabled on the subscription
 
 ### gcs
 
@@ -103,21 +106,21 @@ Implements least-privilege access with 4 service accounts:
 
 | Service Account | Permissions |
 |----------------|-------------|
-| `ingestion-sa` | Pub/Sub publisher, Bigtable user |
-| `governance-sa` | BigQuery data viewer (audit only), job user |
-| `airflow-sa` | Composer worker, BigQuery data editor, GCS object viewer |
-| `dbt-sa` | BigQuery data editor (staging, intermediate, marts), job user |
+| `fdp-<env>-ingestion-sa` | Pub/Sub publisher, Bigtable user |
+| `fdp-<env>-governance-sa` | BigQuery data viewer (audit only), job user |
+| `fdp-<env>-airflow-sa` | Composer worker, BigQuery data editor (raw, staging, intermediate, marts), GCS object viewer |
+| `fdp-<env>-dbt-sa` | BigQuery data viewer (raw), data editor (staging, intermediate, marts), job user |
 
-Includes a custom `financial_auditor` role for compliance officers and Workload Identity bindings for GKE.
+Includes a custom `financial_auditor` role for compliance officers and Workload Identity bindings for the `data-services/ingestion-service` and `data-services/governance-service` Kubernetes service accounts created by the kubernetes module.
 
 ### kubernetes
 
-Provisions a GKE Autopilot cluster with two microservices:
+Provisions a GKE Autopilot cluster and, in the `data-services` namespace, for each service a Workload-Identity-annotated Kubernetes service account, a Deployment and a ClusterIP Service:
 
-- **ingestion-service**: Validates and publishes financial events (HPA: 2-10 replicas)
-- **governance-service**: Monitors access patterns and enforces data policies
+- **ingestion-service** (port 8080, `/healthz` probes, HPA 2-10 replicas): env `PUBSUB_*` / `BIGTABLE_*` wired from the pubsub and bigtable modules
+- **governance-service** (port 8081, `/healthz` probes): env `ENVIRONMENT`, `BIGQUERY_PROJECT_ID`, `BIGQUERY_DATASET_AUDIT` wired from the bigquery module
 
-Network policies restrict egress to only the GCP APIs each service needs. Pod disruption budgets ensure availability during maintenance.
+Images are `${artifact_registry_repo}/<service>:${image_tag}`, the path the CD workflow pushes (`ARTIFACT_REGISTRY_REPO/<service>:<short-sha>`); the repository itself is not created by Terraform. Egress network policies limit each pod to DNS and HTTPS; pod disruption budgets keep one pod of each service available during maintenance.
 
 ### cloud_composer
 
@@ -145,10 +148,10 @@ Implements the DR strategy with:
 ```bash
 cd terraform/environments/dev
 
-# Update terraform.tfvars with your project ID
+# Update terraform.tfvars with your project ID (optionally artifact_registry_repo / image_tag)
 vim terraform.tfvars
 
-terraform init
+terraform init          # local backend, no backend config needed
 terraform plan
 terraform apply
 ```
@@ -161,14 +164,24 @@ cd terraform/environments/prod
 # Create the state bucket first
 gsutil mb -p YOUR_PROJECT_ID gs://YOUR_PROJECT_ID-terraform-state
 
-# Update terraform.tfvars and backend bucket reference in main.tf
+# Update terraform.tfvars, then point the gcs backend at your bucket
 vim terraform.tfvars
-vim main.tf
+terraform init \
+  -backend-config="bucket=YOUR_PROJECT_ID-terraform-state" \
+  -backend-config="prefix=financial-data-platform/prod"
 
-terraform init
 terraform plan -out=plan.tfplan
 # Review the plan carefully before applying
 terraform apply plan.tfplan
+```
+
+The CD workflow (`.github/workflows/cd.yml`) runs exactly these init/plan steps for the selected environment and uploads the plan; apply stays manual.
+
+### Validate Locally
+
+```bash
+make tf-validate   # terraform init -backend=false + validate for every module
+make tf-fmt        # terraform fmt -recursive terraform/
 ```
 
 ## Design Decisions
