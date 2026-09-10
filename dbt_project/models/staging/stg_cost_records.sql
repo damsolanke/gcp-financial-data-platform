@@ -25,8 +25,8 @@ cleaned AS (
         category,
         amount_cents,
         currency,
+        vendor,
         description,
-        metadata,
         {{ dbt_utils.generate_surrogate_key(['record_id']) }} AS surrogate_key,
         ingestion_timestamp,
         'pubsub_ingestion' AS source_system

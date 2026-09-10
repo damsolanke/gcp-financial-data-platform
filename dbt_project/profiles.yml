@@ -1,3 +1,8 @@
+# Every BigQuery dataset in the platform follows fdp_<env>_<layer>.
+# The `dataset` below is the fdp_<env> prefix; dbt appends each layer's
+# custom schema from dbt_project.yml to it (fdp_dev_staging,
+# fdp_dev_marts_finance, fdp_dev_marts_analytics, fdp_dev_seeds), which is
+# exactly what terraform/modules/bigquery provisions.
 financial_data_platform:
   target: dev
   outputs:
@@ -5,7 +10,7 @@ financial_data_platform:
       type: bigquery
       method: service-account
       project: "{{ env_var('GCP_PROJECT_ID') }}"
-      dataset: "{{ env_var('BQ_DATASET', 'financial_dev') }}"
+      dataset: "{{ env_var('BQ_DATASET', 'fdp_dev') }}"
       keyfile: "{{ env_var('GCP_KEYFILE_PATH') }}"
       location: US
       threads: 4
@@ -17,7 +22,7 @@ financial_data_platform:
       type: bigquery
       method: service-account
       project: "{{ env_var('GCP_PROJECT_ID') }}"
-      dataset: "{{ env_var('BQ_DATASET', 'financial_staging') }}"
+      dataset: "{{ env_var('BQ_DATASET', 'fdp_staging') }}"
       keyfile: "{{ env_var('GCP_KEYFILE_PATH') }}"
       location: US
       threads: 8
@@ -29,7 +34,7 @@ financial_data_platform:
       type: bigquery
       method: service-account
       project: "{{ env_var('GCP_PROJECT_ID') }}"
-      dataset: "{{ env_var('BQ_DATASET', 'financial_prod') }}"
+      dataset: "{{ env_var('BQ_DATASET', 'fdp_prod') }}"
       keyfile: "{{ env_var('GCP_KEYFILE_PATH') }}"
       location: US
       threads: 16
