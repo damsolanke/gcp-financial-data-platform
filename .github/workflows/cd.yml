@@ -230,3 +230,17 @@ jobs:
             dbt_project/target/manifest.json
             dbt_project/target/run_results.json
           retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Secret scanning -- full history
+  # ---------------------------------------------------------------------------
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
