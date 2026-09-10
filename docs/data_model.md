@@ -18,11 +18,12 @@ schemas/
 **How schemas flow through the system:**
 
 1. **schemas/** -- The canonical JSON Schema definitions. All other copies derive from these.
-2. **ingestion-service/internal/validator/schemas/** -- Copies embedded in the Go binary at build time. The ingestion service validates every incoming event against these schemas before publishing to Pub/Sub.
-3. **dbt_project/models/staging/schema.yml** -- Column-level expectations (not_null, accepted_values, unique, relationships) that mirror the JSON Schema constraints. dbt tests enforce these at the BigQuery layer.
-4. **dbt_project/models/schema.yml** -- Mart-level documentation and tests that describe the transformed data model.
+2. **ingestion-service/internal/validator/schemas/** -- Copies embedded in the Go binary at build time. The ingestion service validates every incoming event against these schemas before publishing to Pub/Sub. `internal/handler/contract_test.go` fails if the copies drift from `schemas/` or if a published payload violates them.
+3. **terraform/modules/bigquery** -- The `fdp_<env>_raw` landing tables (`raw_revenue_transactions`, `raw_usage_metrics`, `raw_cost_records`) have one column per schema property plus `ingestion_timestamp`; `timestamp` is kept as the published string.
+4. **dbt_project/models/staging/schema.yml** -- Column-level expectations (not_null, accepted_values, unique, relationships) that mirror the JSON Schema constraints. dbt tests enforce these at the BigQuery layer.
+5. **dbt_project/models/schema.yml** -- Mart-level documentation and tests that describe the transformed data model.
 
-Changes to the schema require coordinated updates across all four locations. This is deliberate -- financial data schemas should change rarely, and every downstream consumer must explicitly acknowledge the change.
+Changes to the schema require coordinated updates across all five locations (the Go test catches the first one automatically). This is deliberate -- financial data schemas should change rarely, and every downstream consumer must explicitly acknowledge the change.
 
 ---
 
@@ -41,9 +42,11 @@ The core billing event. Generated when a customer's API usage is metered and bil
 | `customer_id` | string | Yes | minLength: 1 | Customer identifier, links to usage metrics |
 | `product_line` | string (enum) | Yes | `api_usage`, `enterprise_license`, `professional_services` | Revenue classification |
 | `region` | string (enum) | Yes | `us-east`, `us-west`, `eu-west`, `ap-southeast` | Geographic origin |
-| `metadata` | object | No | additionalProperties: true | Arbitrary key-value pairs |
+| `metadata` | object | No | additionalProperties: true | Arbitrary key-value pairs (BigQuery `JSON` column in the raw table) |
 
-**Design note:** Amounts are stored in cents as integers to avoid floating-point precision issues. The `cents_to_dollars` dbt macro handles presentation-layer conversion: `ROUND(CAST(amount AS NUMERIC) / 100, 2)`.
+**Design note:** Amounts are stored in cents as integers to avoid floating-point precision issues. The `cents_to_dollars` dbt macro handles presentation-layer conversion: `ROUND(CAST(amount AS FLOAT64) / 100.0, 2)`.
+
+**Timestamps:** `timestamp` is RFC 3339. The two producers in this repository emit two shapes -- `2025-01-15T10:30:00Z` (hand-written clients, README examples) and `2025-01-15T10:30:00.123456+00:00` (`scripts/generate_sample_data.py`, Python `isoformat()`). Both validate against `format: date-time`, and the dbt `parse_event_timestamp` macro (`%Y-%m-%dT%H:%M:%E*S%Ez`, with a trailing `Z` normalised to `+00:00`) parses both.
 
 ### Usage Metric
 
@@ -125,24 +128,24 @@ Internal operational cost tracking. Feeds cost attribution and unit economics ca
 
 ### Staging Models
 
-All staging models follow the same pattern: deduplicate by primary key, cast ISO 8601 strings to TIMESTAMP, extract DATE for partitioning, generate a deterministic surrogate key, and tag with the source system identifier.
+All staging models follow the same pattern: deduplicate by primary key (latest `ingestion_timestamp` wins), parse the ISO 8601 string with the `parse_event_timestamp` macro, extract DATE for partitioning, generate a deterministic surrogate key, and tag with the source system identifier. They are views in `fdp_<env>_staging` over the `fdp_<env>_raw` landing tables.
 
 #### stg_revenue_transactions
 
 | Column | Type | Source | Transformation |
 |--------|------|--------|----------------|
 | `transaction_id` | STRING | `raw_revenue_transactions.transaction_id` | Pass-through |
-| `event_timestamp` | TIMESTAMP | `raw_revenue_transactions.timestamp` | `PARSE_TIMESTAMP` from ISO 8601 |
+| `event_timestamp` | TIMESTAMP | `raw_revenue_transactions.timestamp` | `parse_event_timestamp` macro (fractional seconds + offset) |
 | `event_date` | DATE | Derived | `DATE(event_timestamp)` |
 | `amount_cents` | INT64 | `raw_revenue_transactions.amount_cents` | Pass-through |
 | `currency` | STRING | `raw_revenue_transactions.currency` | Pass-through |
 | `customer_id` | STRING | `raw_revenue_transactions.customer_id` | Pass-through |
 | `product_line` | STRING | `raw_revenue_transactions.product_line` | Pass-through |
 | `region` | STRING | `raw_revenue_transactions.region` | Pass-through |
-| `metadata` | STRING | `raw_revenue_transactions.metadata` | Pass-through (JSON string) |
+| `metadata` | JSON | `raw_revenue_transactions.metadata` | Pass-through |
 | `surrogate_key` | STRING | Derived | `dbt_utils.generate_surrogate_key(['transaction_id'])` |
 | `ingestion_timestamp` | TIMESTAMP | `raw_revenue_transactions.ingestion_timestamp` | Pass-through |
-| `source_system` | STRING | Constant | `'pubsub_ingestion_pipeline'` |
+| `source_system` | STRING | Constant | `'pubsub_ingestion'` |
 
 **Tests:** `transaction_id` not_null; `surrogate_key` unique + not_null; `currency` accepted_values (USD, EUR, GBP, JPY); `product_line` accepted_values; `region` accepted_values.
 
@@ -151,15 +154,15 @@ All staging models follow the same pattern: deduplicate by primary key, cast ISO
 | Column | Type | Source | Transformation |
 |--------|------|--------|----------------|
 | `metric_id` | STRING | `raw_usage_metrics.metric_id` | Pass-through |
-| `event_timestamp` | TIMESTAMP | `raw_usage_metrics.timestamp` | `PARSE_TIMESTAMP` from ISO 8601 |
+| `event_timestamp` | TIMESTAMP | `raw_usage_metrics.timestamp` | `parse_event_timestamp` macro |
 | `event_date` | DATE | Derived | `DATE(event_timestamp)` |
 | `customer_id` | STRING | `raw_usage_metrics.customer_id` | Pass-through |
 | `metric_type` | STRING | `raw_usage_metrics.metric_type` | Pass-through |
-| `quantity` | NUMERIC | `raw_usage_metrics.quantity` | Pass-through |
+| `quantity` | FLOAT64 | `raw_usage_metrics.quantity` | Pass-through |
 | `unit` | STRING | `raw_usage_metrics.unit` | Pass-through |
 | `surrogate_key` | STRING | Derived | `dbt_utils.generate_surrogate_key(['metric_id'])` |
 | `ingestion_timestamp` | TIMESTAMP | `raw_usage_metrics.ingestion_timestamp` | Pass-through |
-| `source_system` | STRING | Constant | `'pubsub_ingestion_pipeline'` |
+| `source_system` | STRING | Constant | `'pubsub_ingestion'` |
 
 **Tests:** `metric_id` not_null; `surrogate_key` unique + not_null; `metric_type` accepted_values (api_calls, tokens_processed, compute_hours); `customer_id` relationships to `stg_revenue_transactions.customer_id` (severity: warn).
 
@@ -168,16 +171,17 @@ All staging models follow the same pattern: deduplicate by primary key, cast ISO
 | Column | Type | Source | Transformation |
 |--------|------|--------|----------------|
 | `record_id` | STRING | `raw_cost_records.record_id` | Pass-through |
-| `event_timestamp` | TIMESTAMP | `raw_cost_records.timestamp` | `PARSE_TIMESTAMP` from ISO 8601 |
+| `event_timestamp` | TIMESTAMP | `raw_cost_records.timestamp` | `parse_event_timestamp` macro |
 | `event_date` | DATE | Derived | `DATE(event_timestamp)` |
 | `cost_center` | STRING | `raw_cost_records.cost_center` | Pass-through |
 | `category` | STRING | `raw_cost_records.category` | Pass-through |
 | `amount_cents` | INT64 | `raw_cost_records.amount_cents` | Pass-through |
 | `currency` | STRING | `raw_cost_records.currency` | Pass-through |
+| `vendor` | STRING | `raw_cost_records.vendor` | Pass-through |
 | `description` | STRING | `raw_cost_records.description` | Pass-through |
 | `surrogate_key` | STRING | Derived | `dbt_utils.generate_surrogate_key(['record_id'])` |
 | `ingestion_timestamp` | TIMESTAMP | `raw_cost_records.ingestion_timestamp` | Pass-through |
-| `source_system` | STRING | Constant | `'pubsub_ingestion_pipeline'` |
+| `source_system` | STRING | Constant | `'pubsub_ingestion'` |
 
 **Tests:** `record_id` not_null; `surrogate_key` unique + not_null; `category` accepted_values (compute, storage, network, personnel); `cost_center` relationships to `cost_center_hierarchy.cost_center` (severity: warn).
 
@@ -200,15 +204,18 @@ Aggregates revenue transactions by date, product line, region, and currency. Joi
 
 #### int_customer_usage_aggregated
 
-Pivots usage metrics by customer and metric type into a wide format for customer-level reporting.
+Aggregates usage by customer, day and metric type, with 7-day and 30-day rolling averages (`int_customer_usage_aggregated.sql`).
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `customer_id` | STRING | Customer identifier |
-| `event_date` | DATE | Usage date |
-| `total_api_calls` | NUMERIC | Total api_calls quantity |
-| `total_tokens_processed` | NUMERIC | Total tokens_processed quantity |
-| `total_compute_hours` | NUMERIC | Total compute_hours quantity |
+| `metric_date` | DATE | Usage date |
+| `metric_type` | STRING | api_calls, tokens_processed or compute_hours |
+| `total_quantity` | FLOAT64 | Sum of `quantity` for the day |
+| `event_count` | INT64 | Number of events |
+| `unit` | STRING | Unit of measurement |
+| `rolling_7d_avg` / `rolling_30d_avg` | FLOAT64 | Rolling averages of `total_quantity` |
+| `prev_day_quantity` | FLOAT64 | Previous day's `total_quantity` |
 
 #### int_cost_by_center
 
@@ -354,9 +361,11 @@ Maps cost center identifiers to their department and division for organizational
 
 ## Audit Schemas
 
+The `access_log` and `permission_changes` entries below are the governance service's Pydantic models (`governance/app/models/audit.py`), kept in memory. The BigQuery tables of the same name in `fdp_<env>_audit` (`terraform/modules/bigquery`) use a different, more generic column set (`principal`, `resource`, `action`, `result`, ...) and nothing writes to them yet; aligning the two is a follow-up. `anomaly_alerts` is the one audit table that is written today, by the `AnomalyDetectionOperator`, and its schema is shared by the operator INSERT, Terraform and this document.
+
 ### access_log
 
-Every access check (granted and denied) is logged to this append-only table.
+Every access check (granted and denied) is logged to this append-only store.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -390,7 +399,7 @@ Every grant and revoke operation.
 
 ### pipeline_audit_log
 
-Every Airflow DAG execution.
+Every Airflow DAG execution. The `update_audit_log` task builds this record and logs it; the BigQuery insert into `fdp_<env>_audit.pipeline_audit_log` (whose Terraform columns are `run_id`, `dag_id`, `task_id`, `started_at`, `finished_at`, `status`, `rows_affected`, `error_message`) is not implemented.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -425,25 +434,32 @@ Statistical outliers in total daily revenue detected by `AnomalyDetectionOperato
 
 ## BigQuery Dataset Organization
 
-| Dataset | Contains | Access |
-|---------|----------|--------|
-| `raw` | Source tables loaded from Pub/Sub | Data Engineer (read/write) |
-| `staging` | Deduplicated, typed staging models | Data Engineer (read/write) |
-| `intermediate` | Business logic models | Data Engineer (read/write) |
-| `marts_finance` | Revenue, cost, product reporting | Finance Analyst, Executive (read) |
-| `marts_analytics` | Usage, unit economics | Finance Analyst, Data Engineer, Executive (read) |
-| `audit` | Access logs, pipeline audit, anomaly alerts | Auditor (read only) |
-| `fdp_*_snapshots` | DR dataset snapshots (30-day retention) | Admin only |
+Every dataset is named `fdp_<env>_<layer>` with `<env>` in `dev`, `staging`, `prod`. Terraform (`terraform/modules/bigquery`), dbt (`profiles.yml` dataset `fdp_<env>` + `+schema` per layer), the Airflow DAG (`BQ_DATASET_*` from Cloud Composer), the governance service (`fdp_<env>_audit`) and docker-compose all use the same names. RBAC patterns in the governance service use the logical `<layer>` (`marts_finance.*`).
+
+| Dataset | Created by | Contains | Access |
+|---------|-----------|----------|--------|
+| `fdp_<env>_raw` | Terraform (tables) | Landing tables loaded by the DAG (`raw_*`) | Airflow SA (write), dbt SA (read) |
+| `fdp_<env>_staging` | Terraform (dataset), dbt (views) | Deduplicated, typed `stg_*` views | Data Engineer (read/write) |
+| `fdp_<env>_intermediate` | Terraform (dataset) | Empty: intermediate models are ephemeral | Data Engineer (read/write) |
+| `fdp_<env>_marts_finance` | Terraform (dataset), dbt (tables) | Revenue, cost, product reporting | Finance Analyst, Executive (read) |
+| `fdp_<env>_marts_analytics` | Terraform (dataset), dbt (tables) | Usage, unit economics | Finance Analyst, Data Engineer, Executive (read) |
+| `fdp_<env>_seeds` | dbt | Exchange rates, product lines, cost centers | Data Engineer |
+| `fdp_<env>_audit` | Terraform (tables) | Access logs, permission changes, pipeline audit, anomaly alerts | Auditor (read only) |
+| `fdp_<env>_snapshots` | Terraform (disaster_recovery) | Daily table copies (`<table>_snapshot_<run_date>`) | Admin only |
 
 ---
 
 ## BigTable Schema
 
+Written by `ingestion-service/internal/bigtable/writer.go` (`RowKey`, `WriteEvent`); `scripts/seed_bigtable.py` writes the identical layout.
+
 | Component | Value |
 |-----------|-------|
-| **Instance** | `financial-events` |
-| **Table** | `events` |
-| **Column Family** | `event_data` |
-| **Row Key** | `{event_type}#{event_id}` (e.g., `revenue_transaction#550e8400-e29b-41d4-a716-446655440000`) |
+| **Instance** | `financial-events-<env>` (Terraform); `financial-events` locally (`BIGTABLE_INSTANCE_ID`) |
+| **Table** | `financial_events` (Terraform); `events` locally (`BIGTABLE_TABLE_ID`, service default) |
+| **Row Key** | `{event_type}#{reverse_ts}#{event_id}` where `reverse_ts = math.MaxInt64 - event_unix_ms`, formatted with at least 13 digits (19 in practice), e.g. `revenue_transaction#9223370299990775807#550e8400-e29b-41d4-a716-446655440000` |
+| **`event_data`** | column `raw`: the validated JSON payload (90-day GC) |
+| **`metadata`** | one column per Pub/Sub attribute: `event_type`, `event_id`, `timestamp` (1 version) |
+| **`processing_status`** | `received_at`, `validated_at` RFC 3339 timestamps (3 versions) |
 
-The row key prefix enables efficient range scans by event type. The event ID suffix ensures uniqueness and supports idempotent writes. Column family `event_data` stores the full JSON payload as a single cell value.
+The event-type prefix makes "recent events of one type" a short prefix scan; the reverse timestamp puts the newest event first within that prefix; the event ID suffix keeps keys unique. Writes use a conditional mutation on `event_data:raw`, so a redelivered event is a no-op.

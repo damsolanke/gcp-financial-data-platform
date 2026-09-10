@@ -6,13 +6,13 @@ This is the condensed version of [ARCHITECTURE.md](../ARCHITECTURE.md), structur
 
 ## Opening (2 minutes)
 
-> "I built a production-grade financial data platform on GCP that handles event ingestion, batch transformations, access control, and disaster recovery. The system processes financial events from billing, usage tracking, and cost allocation systems, transforms them into reporting-ready datasets, and enforces RBAC with full audit trails for SOX compliance."
+> "I built a reference architecture for a financial data platform on GCP that covers event ingestion, batch transformations, access control, and disaster recovery. The system processes financial events from billing, usage tracking, and cost allocation systems, transforms them into reporting-ready datasets, and enforces RBAC with full audit trails for SOX compliance."
 
 **Key numbers to mention upfront:**
-- 10K events/sec ingestion throughput
-- <45 minute RTO, <1 hour RPO
-- 7-year audit trail retention
-- 5 roles, 5 fact tables, 7 Terraform modules
+- Designed for 10K events/sec ingestion (schema validation measures ~86K validations/sec per core, `make bench`)
+- <45 minute RTO, <1 hour RPO targets
+- 7-year audit trail retention target
+- 5 roles, 5 fact tables, 8 Terraform modules
 
 ---
 
@@ -28,7 +28,7 @@ An AI company needs reliable financial data infrastructure. Revenue accuracy fee
 
 ### Likely Follow-Up
 **Q: Why not just use BigQuery for everything?**
-A: BigQuery is excellent for analytics but has minimum 1-second query latency and is not designed for point lookups. Operational dashboards need sub-second access to recent events, which BigTable provides. BigQuery handles the batch analytics where latency tolerance is 30+ minutes.
+A: BigQuery is excellent for analytics but has roughly one second of minimum query latency and is not designed for point lookups. Operational dashboards need sub-second access to recent events, which BigTable provides. BigQuery handles the batch analytics where latency tolerance is 30+ minutes.
 
 ---
 
@@ -60,7 +60,7 @@ Pub/Sub -> Airflow DAG (02:00 UTC) -> MERGE into staging -> dbt run (staging -> 
 **Talking Points:**
 - "The DAG runs daily at 02:00 UTC with a 4-hour SLA. The MERGE operation provides exactly-once semantics -- if the same event arrives twice (Pub/Sub at-least-once delivery), the MERGE deduplicates on the event ID."
 - "dbt enforces a three-layer transformation pattern. Staging handles deduplication and type casting. Intermediate handles business logic like currency conversion and aggregation. Marts are the reporting-ready tables that users query."
-- "Every dbt model is tested. The staging layer has 40+ tests including not_null, unique, accepted_values, and referential integrity. Custom tests assert revenue non-negativity, no orphan transactions, and date completeness."
+- "Every dbt model is tested. The staging layer has 38 schema tests (not_null, unique, accepted_values, relationships), three singular tests assert revenue non-negativity, no orphan transactions, and date completeness, and unit tests pin the timestamp-parsing macro."
 
 **Likely Follow-Up:**
 - **Q: Why daily and not streaming?** A: The business requirements are daily financial reports. Streaming would add complexity (Dataflow, watermarking, late data handling) for no user-facing benefit. When the business needs intra-day reporting, we add a Dataflow streaming pipeline that writes to BigQuery -- the dbt models work unchanged.
@@ -75,7 +75,7 @@ User/Service -> GET /api/v1/access/check/{user_id}/{dataset_id} -> RBAC Engine -
 **Talking Points:**
 - "Every data access is evaluated against a permission matrix: role -> dataset pattern -> permissions. The engine uses glob matching (e.g., `marts_finance.*` matches `marts_finance.fct_daily_revenue_summary`)."
 - "Every access check is logged, including denied requests. The audit log captures user ID, dataset, permission, IP address, user agent, and the matched RBAC pattern."
-- "The IAM sync service translates the application RBAC matrix into GCP IAM bindings. This ensures BigQuery-level permissions always match the application layer."
+- "The IAM sync module generates GCP IAM bindings (Terraform HCL or binding dicts) from the application RBAC matrix and validates them against a no-primitive-roles / no-public-access policy; applying them is a manual Terraform step."
 
 **Likely Follow-Up:**
 - **Q: Why not use GCP IAM directly?** A: GCP IAM does not provide application-level audit logging with the detail we need (matched pattern, request reason, session context). Also, GCP IAM operates at the dataset level -- our RBAC supports table-level patterns within datasets.
@@ -114,7 +114,7 @@ stg_cost      --> int_cost_by_center --> fct_monthly_cost_attribution
 ## Infrastructure and DR (5 minutes)
 
 ### Terraform Modules
-7 modules covering the full GCP footprint: BigQuery, BigTable, Pub/Sub, GCS, IAM, Kubernetes, Cloud Composer, and Disaster Recovery.
+8 modules covering the full GCP footprint: BigQuery, BigTable, Pub/Sub, GCS, IAM, Kubernetes, Cloud Composer, and Disaster Recovery.
 
 ### DR Strategy
 - **BigQuery**: Daily dataset snapshots via Data Transfer Service. Restore is a metadata operation (instant).
@@ -158,7 +158,7 @@ stg_cost      --> int_cost_by_center --> fct_monthly_cost_attribution
 ## Closing (2 minutes)
 
 **Points to emphasize:**
-- "The system is fully testable without GCP credentials. CI uses emulators (Pub/Sub, BigTable) and dry-run modes (dbt parse/compile, terraform validate)."
+- "Everything in CI runs without GCP credentials and without emulators: Go unit and contract tests (emulator-backed publisher/Bigtable tests skip themselves), ruff/mypy/pytest, dbt parse, terraform fmt/validate, and Airflow DAG import tests. The Pub/Sub and Bigtable emulators are only used locally via docker-compose."
 - "Every component has a clear responsibility boundary. The ingestion service does not know about dbt. The governance service does not know about Pub/Sub. This separation makes each component independently testable and replaceable."
 - "The Makefile is the single interface for all operations: `make test`, `make lint`, `make up`, `make generate`. A new team member can run the full stack locally in under 5 minutes."
 
