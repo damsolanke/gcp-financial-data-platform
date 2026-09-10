@@ -53,8 +53,9 @@ lint-terraform:
 # Benchmark
 # ──────────────────────────────────────────────────────────────
 
+# -run=^$ skips the unit tests so only benchmarks execute.
 bench:
-	cd ingestion-service && go test -bench=. -benchmem ./internal/validator/
+	cd ingestion-service && go test -bench=. -benchmem -run=^$$ ./internal/validator/...
 
 # ──────────────────────────────────────────────────────────────
 # Local Development
