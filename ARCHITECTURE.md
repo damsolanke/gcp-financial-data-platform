@@ -1,6 +1,6 @@
 # Architecture
 
-This document provides a comprehensive walkthrough of the GCP Financial Data Platform architecture. It is structured for a 45-minute system design discussion -- start with the problem, walk through requirements, justify decisions, and address scaling and security.
+This document provides a comprehensive walkthrough of the GCP Financial Data Platform, a reference architecture for financial event ingestion, transformation and governance on GCP. It is structured for a 45-minute system design discussion -- start with the problem, walk through requirements, justify decisions, and address scaling and security. Sections 6-8 describe how the design is meant to scale, be secured and be paid for; the README's "What is wired vs. scaffolded" table lists exactly which parts exist as code in this repository.
 
 ---
 
@@ -42,7 +42,7 @@ Revenue accuracy directly impacts financial reporting, cost optimization decisio
 | Hot-path query latency | <1 minute | Recent event lookups via BigTable for operational dashboards |
 | Batch pipeline freshness | <30 minutes | Daily pipeline runs at 02:00 UTC with 4-hour SLA |
 | Audit trail retention | 7 years | SOX/ITGC compliance for financial records |
-| Ingestion throughput | 10K+ events/second | Current load is ~100K events/day; headroom for 100x growth |
+| Ingestion throughput | 10K+ events/second (design target) | Schema validation alone measures ~86K validations/sec on one core (`make bench`); end-to-end throughput has not been load-tested |
 
 ---
 
@@ -65,22 +65,22 @@ The billing system generates a revenue transaction event when a customer's API c
 The event is POSTed to `POST /api/v1/events` on the Go ingestion service. The chi router handles request parsing, timeout enforcement (60s), and structured logging via zerolog.
 
 ### Step 3: Schema Validation
-The validator loads JSON Schema Draft-07 definitions at startup and validates the event payload. It determines the event type from the payload structure (presence of `transaction_id` vs `metric_id` vs `record_id`) and applies the corresponding schema. Validation includes type checking, required field enforcement, enum value validation, and format verification (UUID, date-time, currency codes).
+The validator compiles the embedded JSON Schema Draft-07 definitions on first use and validates the event payload. The event type comes from the `?type=` query parameter or an `event_type` field in the body (which is stripped before validation, because every schema sets `additionalProperties: false`); the corresponding schema is then applied. Validation includes type checking, required field enforcement, enum value validation, and format verification (UUID, date-time, currency pattern).
 
 ### Step 4: Routing
-- **Valid events**: Published to the `financial-events-validated` Pub/Sub topic with the event type as a message attribute, AND written to BigTable for hot-path queries. The dual write ensures both real-time access and durable event storage.
-- **Invalid events**: Published to the `financial-events-dead-letter` Pub/Sub topic with the validation error details attached as message attributes. Nothing is silently dropped.
+- **Valid events**: The validated payload is published to the validated topic (`financial-events-validated-<env>`, wired in as `PUBSUB_TOPIC_VALIDATED`) with `event_type`, `event_id` and `timestamp` message attributes, AND written to BigTable for hot-path queries. Pub/Sub is the durable path; the BigTable write is best-effort and never fails the request.
+- **Invalid events**: Published to the dead-letter topic (`financial-events-dead-letter-<env>`, `PUBSUB_TOPIC_DLQ`) with the validation error details attached as message attributes. Nothing is silently dropped.
 
 ### Step 5: Hot Path (BigTable)
-The BigTable writer uses the event ID as the row key (ensuring idempotent writes) and stores the full event payload in a single column family. Row keys are prefixed with the event type for efficient scans. This enables sub-second lookups of recent events for operational dashboards and debugging.
+The BigTable writer uses the row key `{event_type}#{math.MaxInt64 - event_unix_ms}#{event_id}` (`internal/bigtable/writer.go`): the event-type prefix makes recent events of one type a short prefix scan, the reverse timestamp puts the newest first, and the event ID keeps keys unique. The payload goes to `event_data:raw`, the Pub/Sub attributes to `metadata`, and `received_at` / `validated_at` to `processing_status`. The write is a conditional mutation (only if `event_data:raw` is absent), so redelivered events are idempotent.
 
 ### Step 6: Batch Ingestion (Airflow)
-The `financial_pipeline_daily` DAG triggers at 02:00 UTC. First, a freshness check ensures the staging tables have been updated within the last 24 hours. Then, the `load_to_staging` task pulls messages from the Pub/Sub subscription and executes a `MERGE` query per event type into BigQuery staging tables. The MERGE deduplicates by event ID, ensuring exactly-once semantics even if messages are delivered multiple times.
+The `financial_pipeline_daily` DAG triggers at 02:00 UTC. First, a freshness check ensures `fdp_<env>_raw.raw_revenue_transactions` has been updated within the last 24 hours. Then, the `load_to_staging` task executes a `MERGE` per event type into the `fdp_<env>_raw` landing tables, deduplicating by event ID so redelivered messages cannot double-count. In this reference implementation the MERGE reads from a `_temp_<event_type>` table; the Pub/Sub pull that would populate it is not implemented (see the README's wired-vs-scaffolded table).
 
 ### Step 7: dbt Transformations
 Three transformation layers execute sequentially:
 
-1. **Staging** (`stg_*`): Deduplication, type casting (ISO 8601 strings to TIMESTAMP), surrogate key generation, source system tagging.
+1. **Staging** (`stg_*`, views in `fdp_<env>_staging`): Deduplication, timestamp parsing via the `parse_event_timestamp` macro (fractional seconds and numeric offsets, as the generator emits), surrogate key generation, source system tagging.
 2. **Intermediate** (`int_*`): Business logic -- currency conversion using seed exchange rates, daily revenue aggregation, customer usage rollups, cost center allocation.
 3. **Marts** (`fct_*`): Reporting-ready tables -- daily revenue summary with DoD/WoW growth rates and MTD running totals, monthly cost attribution with category breakdown, unit economics with gross margin calculation.
 
@@ -88,7 +88,7 @@ Three transformation layers execute sequentially:
 dbt tests run after transformations: `not_null`, `unique`, `accepted_values`, `relationships` (referential integrity), and three custom tests (`assert_revenue_non_negative`, `assert_no_orphan_transactions`, `assert_date_completeness`).
 
 ### Step 9: Anomaly Detection
-The custom `AnomalyDetectionOperator` queries the `fct_daily_revenue_summary` mart, computes a 30-day rolling mean and standard deviation per product line/region, and flags any day where revenue falls outside 2 standard deviations. Alerts are written to `audit.anomaly_alerts`.
+The custom `AnomalyDetectionOperator` queries the `fct_daily_revenue_summary` mart, sums revenue per day across all product lines and regions, computes a 30-day rolling mean and standard deviation, and flags any day where revenue falls outside 2 standard deviations. Alerts are inserted into `fdp_<env>_audit.anomaly_alerts` with the schema in `docs/data_model.md`.
 
 ### Step 10: Access Control (Read Path)
 When a user or service queries a mart, the governance service evaluates the request against the RBAC permission matrix. The engine iterates through the role's dataset patterns (e.g., `marts_finance.*`) and returns GRANTED on first glob match with the requested permission. Every access check -- both granted and denied -- is logged to the audit trail with user ID, dataset, permission, IP address, user agent, and matched pattern.
@@ -101,7 +101,7 @@ When a user or service queries a mart, the governance service evaluates the requ
 
 **Context**: The system needs sub-second lookups of recent events for operational dashboards and incident debugging. The hot-path store must be durable and consistent.
 
-**Decision**: BigTable with SSD storage and auto-scaling.
+**Decision**: BigTable with SSD storage (fixed node count per environment; autoscaling is not configured in the Terraform module).
 
 **Tradeoff**: BigTable has higher per-read latency (~5-10ms) compared to Redis (~1ms), but provides strong durability guarantees without additional replication configuration. At 10K events/second, the latency difference is negligible for dashboard use cases.
 
@@ -179,7 +179,7 @@ The system is provisioned for 10K events/sec burst capacity. At current load, al
 
 | Component | Change Required |
 |-----------|----------------|
-| BigTable | Add nodes via auto-scaling (currently 1 node, scales to 10+) |
+| BigTable | Raise `num_nodes` (1 in dev, 3 in prod today) or enable cluster autoscaling |
 | Pub/Sub | No change (automatic throughput scaling) |
 | Ingestion Service | Add GKE replicas (horizontal pod autoscaler) |
 | Airflow | Add workers, increase task parallelism |
@@ -226,17 +226,17 @@ The system is provisioned for 10K events/sec burst capacity. At current load, al
 
 ### Encryption
 
-| Layer | Method | Key Management |
-|-------|--------|---------------|
-| At rest | AES-256 (GCP default) | Google-managed keys (CMEK available for Tier 3) |
-| In transit | TLS 1.3 | Managed certificates |
-| Application | Field-level encryption for Tier 3 PII | Cloud KMS with envelope encryption |
+| Layer | Method | Key Management | In this repository |
+|-------|--------|---------------|--------------------|
+| At rest | AES-256 (GCP default) | Google-managed keys (CMEK available for Tier 3) | GCP default; no CMEK configured |
+| In transit | TLS | Managed certificates | Services speak plain HTTP inside the cluster; no ingress/TLS termination is provisioned |
+| Application | Field-level encryption for Tier 3 PII | Cloud KMS with envelope encryption | Design intent only; not implemented |
 
 ### IAM
 
 - **Least privilege**: Every service account has the minimum permissions needed. The ingestion service can publish to Pub/Sub and write to BigTable, but cannot read from BigQuery.
-- **Service accounts per service**: `ingestion-sa`, `governance-sa`, `composer-sa`, `dbt-sa`. No shared credentials.
-- **Workload Identity**: GKE pods authenticate via Workload Identity Federation -- no JSON key files in the environment. The Terraform IAM module configures the bindings.
+- **Service accounts per service**: `fdp-<env>-ingestion-sa`, `fdp-<env>-governance-sa`, `fdp-<env>-airflow-sa`, `fdp-<env>-dbt-sa` (terraform/modules/iam). No shared credentials.
+- **Workload Identity**: GKE pods authenticate via Workload Identity -- no JSON key files in the environment. The IAM module binds `roles/iam.workloadIdentityUser` to the `data-services/ingestion-service` and `data-services/governance-service` Kubernetes service accounts that the Kubernetes module creates.
 - **Custom roles**: Where predefined roles are too broad (e.g., `roles/bigquery.dataViewer` grants read to ALL datasets), custom roles scope access to specific datasets.
 - **No primitive roles**: The IAM sync validation rejects `roles/owner`, `roles/editor`, and `roles/viewer`.
 
@@ -244,16 +244,15 @@ The system is provisioned for 10K events/sec burst capacity. At current load, al
 
 - **Every data access logged**: Both granted and denied access checks are recorded with user ID, dataset, permission, IP address, user agent, and matched RBAC pattern.
 - **Permission changes tracked**: Every grant and revoke includes the admin who made the change, the reason, and a timestamp.
-- **7-year retention**: Audit tables in BigQuery are append-only with no delete permissions granted to any service account.
-- **Immutable**: BigQuery audit tables use table-level IAM to prevent modifications. Only the governance service account can INSERT.
-- **Pipeline audit**: Every Airflow DAG run records its execution metadata, records processed, and final status.
+- **7-year retention**: Target. The audit dataset has no table expiration; no service account holds a delete role on it, and the governance SA is read-only (`roles/bigquery.dataViewer`).
+- **Immutable**: Design intent. Terraform does not yet configure table-level IAM, and the governance service currently keeps its audit log in memory rather than inserting into BigQuery.
+- **Pipeline audit**: The DAG's `update_audit_log` task builds the run record (run ID, status, records processed) and logs it; inserting it into `fdp_<env>_audit.pipeline_audit_log` is not implemented.
 
 ### Network
 
-- **Private GKE nodes**: Nodes have private IP addresses only. The API server is accessible via authorized networks.
-- **VPC Service Controls**: BigQuery, GCS, and Pub/Sub are inside a service perimeter. Requests from outside the perimeter are denied.
-- **Cloud NAT**: Egress traffic from private nodes routes through Cloud NAT with static IP addresses for allowlisting by external partners.
-- **Internal load balancing**: The governance service is only accessible within the VPC. External access goes through Cloud Armor WAF.
+- **Private GKE nodes** (provisioned): `private_cluster_config` with `enable_private_nodes = true`; the control plane keeps a public endpoint for CI/CD. Egress network policies limit each pod to DNS and HTTPS (plus 8443 for Bigtable).
+- **ClusterIP only** (provisioned): both services are reachable only inside the cluster (`<service>.data-services.svc.cluster.local`); no ingress or load balancer is defined.
+- **VPC Service Controls**, **Cloud NAT** and **Cloud Armor** (design intent): not provisioned in this repository.
 
 ---
 
@@ -290,25 +289,29 @@ Estimated monthly GCP cost at current scale (100K events/day):
 
 ### Metrics (Prometheus)
 
-The ingestion service exposes four metric families at `/metrics`:
+The ingestion service exposes six metric families at `/metrics` (`internal/metrics/prometheus.go`):
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `events_received_total` | Counter | Total events received, labeled by event type and status |
-| `events_validated_total` | Counter | Validation results, labeled by event type and result |
-| `event_processing_duration_seconds` | Histogram | End-to-end processing latency |
-| `pubsub_publish_duration_seconds` | Histogram | Pub/Sub publish latency |
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `ingestion_events_received_total` | Counter | `event_type` | Events received |
+| `ingestion_events_validated_total` | Counter | `event_type`, `result` (`passed` / `failed`) | Validation outcomes |
+| `ingestion_events_failed_total` | Counter | `event_type`, `error_type` (`validation` / `publish`) | Events that failed processing |
+| `ingestion_validation_latency_seconds` | Histogram | `event_type` | Time spent in schema validation |
+| `ingestion_publish_latency_seconds` | Histogram | `topic` (`validated`) | Pub/Sub publish latency |
+| `ingestion_bigtable_write_latency_seconds` | Histogram | - | Bigtable write latency |
 
 ### Alerting Thresholds
 
 | Alert | Threshold | Severity | Action |
 |-------|-----------|----------|--------|
-| Ingestion latency p99 | >500ms | Warning | Check BigTable writer |
+| `ingestion_publish_latency_seconds` p99 | >500ms | Warning | Check Pub/Sub; then `ingestion_bigtable_write_latency_seconds` |
 | DLQ message rate | >1% of total | Critical | Schema change or upstream issue |
 | Airflow DAG failure | Any task failure | Critical | Check task logs, retry |
 | BigQuery freshness | >24h stale | Warning | Check Airflow scheduler |
 | Anomaly detection | >2 sigma | Warning | Review in dashboard |
 | Pub/Sub backlog | >10K unacked | Critical | Consumer health check |
+
+No alerting rules are defined in this repository; the thresholds are the intended starting points.
 
 ---
 
