@@ -8,6 +8,7 @@ require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/prometheus/client_golang v1.20.5
 	github.com/rs/zerolog v1.33.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/xeipuuv/gojsonschema v1.2.0
 )
 
