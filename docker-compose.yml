@@ -11,7 +11,16 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
     PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
     BIGTABLE_EMULATOR_HOST: bigtable-emulator:8086
+    # Same variables Cloud Composer exports (terraform/modules/cloud_composer);
+    # datasets follow fdp_<env>_<layer>.
     GCP_PROJECT_ID: local-project
+    ENVIRONMENT: dev
+    BQ_DATASET_RAW: fdp_dev_raw
+    BQ_DATASET_STAGING: fdp_dev_staging
+    BQ_DATASET_INTERMEDIATE: fdp_dev_intermediate
+    BQ_DATASET_MARTS_FINANCE: fdp_dev_marts_finance
+    BQ_DATASET_MARTS_ANALYTICS: fdp_dev_marts_analytics
+    BQ_DATASET_AUDIT: fdp_dev_audit
   volumes:
     - ./orchestration/dags:/opt/airflow/dags
     - ./orchestration/plugins:/opt/airflow/plugins
@@ -109,7 +118,9 @@ services:
       PORT: "8081"
       LOG_LEVEL: debug
       SECRET_KEY: local-dev-secret-change-in-production
+      ENVIRONMENT: dev
       BIGQUERY_PROJECT_ID: local-project
+      BIGQUERY_DATASET_AUDIT: fdp_dev_audit
     depends_on:
       postgres:
         condition: service_healthy
