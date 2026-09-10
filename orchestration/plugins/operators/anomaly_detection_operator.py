@@ -11,13 +11,32 @@ from google.cloud import bigquery
 
 logger = logging.getLogger(__name__)
 
+# Columns of the anomaly_alerts table, in INSERT order. This is the single
+# schema shared with terraform/modules/bigquery (google_bigquery_table
+# "anomaly_alerts") and docs/data_model.md; tests/test_anomaly_detection_operator.py
+# fails if any of the three drift.
+ANOMALY_ALERT_COLUMNS: tuple[str, ...] = (
+    "alert_id",
+    "detected_at",
+    "revenue_date",
+    "alert_type",
+    "severity",
+    "source_table",
+    "daily_revenue",
+    "rolling_avg",
+    "rolling_stddev",
+    "deviation_sigma",
+    "dag_run_id",
+)
+
 
 class AnomalyDetectionOperator(BaseOperator):
-    """Detect anomalies in daily revenue using rolling statistics.
+    """Detect anomalies in total daily revenue using rolling statistics.
 
-    Flags any day where revenue deviates more than a configurable number of
-    standard deviations from the rolling average. Writes flagged anomalies
-    to the audit.anomaly_alerts BigQuery table.
+    Sums revenue per day across all product lines and regions and flags any
+    day that deviates more than a configurable number of standard deviations
+    from the rolling average. Writes one row per flagged day to the
+    fdp_<env>_audit.anomaly_alerts BigQuery table (see ANOMALY_ALERT_COLUMNS).
     """
 
     template_fields = ("project_id", "source_table", "alert_table")
@@ -26,18 +45,24 @@ class AnomalyDetectionOperator(BaseOperator):
         self,
         *,
         project_id: str,
-        source_table: str = "marts_finance.fct_daily_revenue_summary",
-        alert_table: str = "audit.anomaly_alerts",
+        source_table: str,
+        alert_table: str,
         lookback_days: int = 30,
         std_dev_threshold: float = 2.0,
+        critical_threshold: float = 3.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.project_id = project_id
-        self.source_table = source_table
-        self.alert_table = alert_table
+        self.source_table = source_table  # <dataset>.<table>, e.g. fdp_prod_marts_finance.fct_daily_revenue_summary
+        self.alert_table = alert_table  # <dataset>.<table>, e.g. fdp_prod_audit.anomaly_alerts
         self.lookback_days = lookback_days
         self.std_dev_threshold = std_dev_threshold
+        self.critical_threshold = critical_threshold
+
+    def _severity(self, deviation_sigma: float) -> str:
+        """Classify a deviation: critical beyond critical_threshold, else warning."""
+        return "critical" if deviation_sigma > self.critical_threshold else "warning"
 
     def _build_anomaly_query(self) -> str:
         """Build the BigQuery SQL that detects anomalies via rolling statistics."""
@@ -85,7 +110,10 @@ class AnomalyDetectionOperator(BaseOperator):
         """
 
     def _build_insert_query(self, anomalies: list[dict[str, Any]], dag_run_id: str) -> str:
-        """Build a BigQuery INSERT statement for the detected anomalies."""
+        """Build a BigQuery INSERT statement for the detected anomalies.
+
+        Column order follows ANOMALY_ALERT_COLUMNS exactly.
+        """
         if not anomalies:
             return ""
 
@@ -93,30 +121,26 @@ class AnomalyDetectionOperator(BaseOperator):
         value_rows = []
         for anomaly in anomalies:
             alert_id = str(uuid4())
+            severity = self._severity(float(anomaly["deviation_sigma"]))
             value_rows.append(
                 f"('{alert_id}', "
+                f"TIMESTAMP('{detected_at}'), "
                 f"DATE('{anomaly['revenue_date']}'), "
+                f"'{anomaly['alert_type']}', "
+                f"'{severity}', "
+                f"'{self.source_table}', "
                 f"{anomaly['daily_revenue']}, "
                 f"{anomaly['rolling_avg']}, "
                 f"{anomaly['rolling_stddev']}, "
                 f"{anomaly['deviation_sigma']}, "
-                f"'{anomaly['alert_type']}', "
-                f"TIMESTAMP('{detected_at}'), "
                 f"'{dag_run_id}')"
             )
 
         values_clause = ",\n                ".join(value_rows)
+        columns_clause = ",\n                ".join(ANOMALY_ALERT_COLUMNS)
         return f"""
             INSERT INTO `{self.project_id}.{self.alert_table}` (
-                alert_id,
-                revenue_date,
-                daily_revenue,
-                rolling_avg,
-                rolling_stddev,
-                deviation_sigma,
-                alert_type,
-                detected_at,
-                dag_run_id
+                {columns_clause}
             )
             VALUES
                 {values_clause}
@@ -174,13 +198,14 @@ class AnomalyDetectionOperator(BaseOperator):
             for anomaly in anomalies:
                 logger.warning(
                     "Anomaly detected: date=%s, revenue=%.2f, avg=%.2f, "
-                    "stddev=%.2f, deviation=%.1f sigma, type=%s",
+                    "stddev=%.2f, deviation=%.1f sigma, type=%s, severity=%s",
                     anomaly["revenue_date"],
                     anomaly["daily_revenue"],
                     anomaly["rolling_avg"],
                     anomaly["rolling_stddev"],
                     anomaly["deviation_sigma"],
                     anomaly["alert_type"],
+                    self._severity(anomaly["deviation_sigma"]),
                 )
         else:
             logger.info("No anomalies detected — daily revenue within normal bounds")

@@ -396,6 +396,10 @@ resource "google_bigquery_table" "permission_changes" {
   ])
 }
 
+# Written by orchestration/plugins/operators/anomaly_detection_operator.py.
+# Column order matches ANOMALY_ALERT_COLUMNS there and the table in
+# docs/data_model.md; orchestration/tests/test_anomaly_detection_operator.py
+# checks all three agree.
 resource "google_bigquery_table" "anomaly_alerts" {
   project             = var.project_id
   dataset_id          = google_bigquery_dataset.audit.dataset_id
@@ -409,14 +413,17 @@ resource "google_bigquery_table" "anomaly_alerts" {
   }
 
   schema = jsonencode([
-    { name = "alert_id", type = "STRING", mode = "REQUIRED", description = "Unique alert identifier" },
-    { name = "detected_at", type = "TIMESTAMP", mode = "REQUIRED", description = "When the anomaly was detected" },
-    { name = "alert_type", type = "STRING", mode = "REQUIRED", description = "Category of anomaly (volume_spike, schema_drift, latency, etc.)" },
-    { name = "severity", type = "STRING", mode = "REQUIRED", description = "Alert severity: INFO, WARNING, CRITICAL" },
-    { name = "source", type = "STRING", mode = "REQUIRED", description = "Component or pipeline that raised the alert" },
-    { name = "description", type = "STRING", mode = "NULLABLE", description = "Human-readable description of the anomaly" },
-    { name = "resolved_at", type = "TIMESTAMP", mode = "NULLABLE", description = "When the anomaly was resolved, null if open" },
-    { name = "resolved_by", type = "STRING", mode = "NULLABLE", description = "Identity that resolved the alert" },
+    { name = "alert_id", type = "STRING", mode = "REQUIRED", description = "Unique alert identifier (UUID)" },
+    { name = "detected_at", type = "TIMESTAMP", mode = "REQUIRED", description = "When the anomaly detection task ran" },
+    { name = "revenue_date", type = "DATE", mode = "REQUIRED", description = "The day whose total revenue was flagged" },
+    { name = "alert_type", type = "STRING", mode = "REQUIRED", description = "spike (above rolling average) or drop (below)" },
+    { name = "severity", type = "STRING", mode = "REQUIRED", description = "warning (beyond the sigma threshold, default 2) or critical (beyond 3 sigma)" },
+    { name = "source_table", type = "STRING", mode = "REQUIRED", description = "<dataset>.<table> that was analysed, e.g. fdp_prod_marts_finance.fct_daily_revenue_summary" },
+    { name = "daily_revenue", type = "FLOAT64", mode = "REQUIRED", description = "Observed SUM(total_revenue_usd) for revenue_date" },
+    { name = "rolling_avg", type = "FLOAT64", mode = "REQUIRED", description = "Rolling mean of daily revenue over the lookback window" },
+    { name = "rolling_stddev", type = "FLOAT64", mode = "REQUIRED", description = "Rolling standard deviation over the same window" },
+    { name = "deviation_sigma", type = "FLOAT64", mode = "REQUIRED", description = "ABS(daily_revenue - rolling_avg) / rolling_stddev" },
+    { name = "dag_run_id", type = "STRING", mode = "NULLABLE", description = "Airflow run that produced the alert" },
   ])
 }
 
