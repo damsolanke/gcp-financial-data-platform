@@ -5,7 +5,7 @@ dbt transformation layer for the GCP Financial Data Infrastructure Platform. Tra
 ## Model Lineage
 
 ```
-Sources (raw BigQuery tables)
+Sources (fdp_<env>_raw landing tables)
   └── Staging (views: dedup, type casting, surrogate keys)
         ├── stg_revenue_transactions
         ├── stg_usage_metrics
@@ -30,10 +30,15 @@ Set the following environment variables before running:
 
 ```bash
 export GCP_PROJECT_ID="your-gcp-project-id"
-export BQ_DATASET="financial_dev"          # target dataset
-export BQ_RAW_DATASET="raw"                # source dataset with raw tables
+export BQ_DATASET="fdp_dev"                # fdp_<env> prefix; dbt appends _staging, _marts_finance, ...
+export BQ_RAW_DATASET="fdp_dev_raw"        # landing tables written by the Airflow DAG (default: ${BQ_DATASET}_raw)
 export GCP_KEYFILE_PATH="/path/to/service-account-key.json"
 ```
+
+Every dataset follows `fdp_<env>_<layer>`, the same scheme Terraform provisions
+(`terraform/modules/bigquery`): `fdp_<env>_raw` (sources), `fdp_<env>_staging`
+(views), `fdp_<env>_marts_finance` / `fdp_<env>_marts_analytics` (tables) and
+`fdp_<env>_seeds`. Intermediate models are ephemeral and have no dataset.
 
 ## Running
 

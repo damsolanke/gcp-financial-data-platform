@@ -2,10 +2,14 @@ version: 2
 
 sources:
   - name: raw
-    description: Raw financial data ingested via Pub/Sub and Cloud Functions into BigQuery.
-    database: "{{ env_var('GCP_PROJECT_ID') }}"
-    schema: "{{ env_var('BQ_RAW_DATASET', 'raw') }}"
-    loader: pubsub_cloud_function
+    description: >
+      Landing tables in the fdp_<env>_raw dataset (terraform/modules/bigquery),
+      loaded by the load_to_staging task of the financial_pipeline_daily DAG.
+      Rows are the event payloads exactly as the ingestion service published
+      them (schemas/*.json) plus an ingestion_timestamp.
+    database: "{{ env_var('GCP_PROJECT_ID', target.database) }}"
+    schema: "{{ env_var('BQ_RAW_DATASET', target.schema ~ '_raw') }}"
+    loader: airflow_financial_pipeline_daily
     loaded_at_field: ingestion_timestamp
     freshness:
       warn_after: {count: 12, period: hour}
@@ -31,7 +35,7 @@ sources:
           - name: region
             description: Geographic region of the transaction (us-east, us-west, eu-west, ap-southeast).
           - name: metadata
-            description: JSON string containing additional transaction metadata.
+            description: Optional JSON object of additional transaction metadata (BigQuery JSON type).
           - name: ingestion_timestamp
             description: Timestamp when the record was ingested into BigQuery.
 
@@ -52,8 +56,6 @@ sources:
             description: Numeric value of the metric.
           - name: unit
             description: Unit of measurement for the metric.
-          - name: metadata
-            description: JSON string containing additional metric metadata.
           - name: ingestion_timestamp
             description: Timestamp when the record was ingested into BigQuery.
 
@@ -76,8 +78,8 @@ sources:
             description: ISO 4217 currency code.
           - name: description
             description: Free-text description of the cost item.
-          - name: metadata
-            description: JSON string containing additional cost metadata.
+          - name: vendor
+            description: External vendor name, if applicable.
           - name: ingestion_timestamp
             description: Timestamp when the record was ingested into BigQuery.
 
@@ -126,7 +128,7 @@ models:
           - accepted_values:
               values: ['us-east', 'us-west', 'eu-west', 'ap-southeast']
       - name: metadata
-        description: Raw JSON metadata string from the source event.
+        description: Optional JSON metadata object from the source event.
       - name: surrogate_key
         description: Deterministic surrogate key derived from transaction_id.
         tests:
@@ -178,8 +180,6 @@ models:
         description: Unit of measurement for the metric quantity.
         tests:
           - not_null
-      - name: metadata
-        description: Raw JSON metadata string from the source event.
       - name: surrogate_key
         description: Deterministic surrogate key derived from metric_id.
         tests:
@@ -233,8 +233,8 @@ models:
           - not_null
       - name: description
         description: Free-text description of the cost item.
-      - name: metadata
-        description: Raw JSON metadata string from the source event.
+      - name: vendor
+        description: External vendor name, if applicable.
       - name: surrogate_key
         description: Deterministic surrogate key derived from record_id.
         tests:
