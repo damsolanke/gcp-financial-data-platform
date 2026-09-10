@@ -48,6 +48,14 @@ locals {
     project     = "financial-data-platform"
     managed_by  = "terraform"
   }
+
+  # Artifact Registry repository for service images. Defaults to
+  # <region>-docker.pkg.dev/<project>/financial-data-platform; the CD
+  # workflow passes its ARTIFACT_REGISTRY_REPO secret explicitly.
+  artifact_registry_repo = coalesce(
+    var.artifact_registry_repo,
+    "${var.region}-docker.pkg.dev/${var.project_id}/financial-data-platform",
+  )
 }
 
 # ---------------------------------------------------------------------------
@@ -132,7 +140,19 @@ module "kubernetes" {
   subnet_id           = "default"
   ingestion_sa_email  = module.iam.service_account_emails["ingestion"]
   governance_sa_email = module.iam.service_account_emails["governance"]
-  labels              = local.common_labels
+
+  # Images: same Artifact Registry path the CD workflow pushes to.
+  artifact_registry_repo = local.artifact_registry_repo
+  image_tag              = var.image_tag
+
+  # Runtime configuration wired from the other modules.
+  pubsub_validated_topic = module.pubsub.validated_topic_name
+  pubsub_dlq_topic       = module.pubsub.dlq_topic_name
+  bigtable_instance_name = module.bigtable.instance_name
+  bigtable_table_name    = module.bigtable.table_name
+  audit_dataset_id       = module.bigquery.dataset_ids["audit"]
+
+  labels = local.common_labels
 }
 
 # ---------------------------------------------------------------------------
