@@ -8,7 +8,8 @@ Tests the permission matrix exhaustively to ensure:
 """
 
 import pytest
-from app.models.rbac import Role, Permission, AccessDecision
+
+from app.models.rbac import AccessDecision, Permission, Role
 from app.services.access_control import check_access
 
 
@@ -58,7 +59,9 @@ class TestFinanceAnalystAccess:
     )
     def test_analyst_read_granted(self, dataset_id: str) -> None:
         """Analyst can read from marts_finance and marts_analytics."""
-        result = check_access(Role.FINANCE_ANALYST, dataset_id, Permission.READ, user_id="analyst-001")
+        result = check_access(
+            Role.FINANCE_ANALYST, dataset_id, Permission.READ, user_id="analyst-001"
+        )
         assert result.decision == AccessDecision.GRANTED
         assert result.matched_pattern is not None
 
@@ -72,7 +75,9 @@ class TestFinanceAnalystAccess:
     )
     def test_analyst_read_denied_other_datasets(self, dataset_id: str) -> None:
         """Analyst cannot read from staging, intermediate, or audit datasets."""
-        result = check_access(Role.FINANCE_ANALYST, dataset_id, Permission.READ, user_id="analyst-001")
+        result = check_access(
+            Role.FINANCE_ANALYST, dataset_id, Permission.READ, user_id="analyst-001"
+        )
         assert result.decision == AccessDecision.DENIED
         assert result.matched_pattern is None
 
@@ -112,7 +117,9 @@ class TestDataEngineerAccess:
         "permission",
         [Permission.READ, Permission.WRITE],
     )
-    def test_engineer_staging_intermediate_rw(self, dataset_id: str, permission: Permission) -> None:
+    def test_engineer_staging_intermediate_rw(
+        self, dataset_id: str, permission: Permission
+    ) -> None:
         """Engineer can read and write staging and intermediate datasets."""
         result = check_access(Role.DATA_ENGINEER, dataset_id, permission, user_id="engineer-001")
         assert result.decision == AccessDecision.GRANTED
@@ -166,7 +173,9 @@ class TestDataEngineerAccess:
     )
     def test_engineer_admin_denied(self, dataset_id: str) -> None:
         """Engineer cannot administer datasets even in staging/intermediate."""
-        result = check_access(Role.DATA_ENGINEER, dataset_id, Permission.ADMIN, user_id="engineer-001")
+        result = check_access(
+            Role.DATA_ENGINEER, dataset_id, Permission.ADMIN, user_id="engineer-001"
+        )
         assert result.decision == AccessDecision.DENIED
 
 
@@ -225,7 +234,9 @@ class TestAuditorAccess:
 
     def test_auditor_audit_read_granted(self) -> None:
         """Auditor can read audit datasets."""
-        result = check_access(Role.AUDITOR, "audit.access_log", Permission.READ, user_id="auditor-001")
+        result = check_access(
+            Role.AUDITOR, "audit.access_log", Permission.READ, user_id="auditor-001"
+        )
         assert result.decision == AccessDecision.GRANTED
         assert result.matched_pattern == "audit.*"
 

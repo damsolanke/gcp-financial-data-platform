@@ -1,7 +1,8 @@
 """Governance service -- data access control and audit logging."""
 
-import structlog
 from contextlib import asynccontextmanager
+
+import structlog
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -18,7 +19,7 @@ logger = structlog.get_logger()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     """Application lifespan handler for startup/shutdown logging."""
     logger.info(
         "governance_service_starting",

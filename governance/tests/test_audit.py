@@ -6,6 +6,7 @@ produce an audit trail entry.
 """
 
 from fastapi.testclient import TestClient
+
 from app.services.audit_logger import (
     get_access_logs,
     get_permission_changes,
@@ -88,7 +89,7 @@ class TestAuditTrailFiltering:
 
         # All logs share different datasets, query one that has all 5
         # Actually, let's query with limit across all by creating same dataset entries
-        for i in range(5):
+        for _ in range(5):
             client.get("/api/v1/access/check/admin-001/staging.same_table")
 
         response = client.get("/api/v1/access/audit/staging.same_table?limit=3")

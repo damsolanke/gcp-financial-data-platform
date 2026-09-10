@@ -4,7 +4,6 @@ Writes to an in-memory store for development and to BigQuery for production.
 Audit logging is async and non-blocking -- it must never slow down access checks.
 """
 
-from typing import Optional
 
 import structlog
 
@@ -31,8 +30,8 @@ async def log_access(entry: AccessLogEntry) -> None:
         result=entry.result,
         permission=entry.permission,
     )
-    # In production: async BigQuery streaming insert
-    # await _write_to_bigquery("audit.access_log", entry.model_dump())
+    # A production deployment would follow this with an asynchronous BigQuery
+    # streaming insert into the audit access_log table; not wired here.
 
 
 async def log_permission_change(entry: PermissionChangeEntry) -> None:
@@ -52,7 +51,7 @@ async def log_permission_change(entry: PermissionChangeEntry) -> None:
 
 
 def get_access_logs(
-    dataset_id: Optional[str] = None, limit: int = 100
+    dataset_id: str | None = None, limit: int = 100
 ) -> list[AccessLogEntry]:
     """Retrieve access logs, optionally filtered by dataset.
 

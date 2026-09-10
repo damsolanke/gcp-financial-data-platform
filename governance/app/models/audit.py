@@ -1,7 +1,6 @@
 """Audit log models for compliance (SOX/ITGC alignment)."""
 
 from datetime import datetime
-from typing import Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -18,10 +17,10 @@ class AccessLogEntry(BaseModel):
     permission: str
     result: str  # "granted", "denied"
     role: str
-    ip_address: Optional[str] = None
-    user_agent: Optional[str] = None
-    session_id: Optional[str] = None
-    matched_pattern: Optional[str] = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    session_id: str | None = None
+    matched_pattern: str | None = None
 
 
 class PermissionChangeEntry(BaseModel):

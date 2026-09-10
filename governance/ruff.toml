@@ -1,0 +1,28 @@
+# Ruff configuration for the governance service.
+# Pinned rule set: keep this list explicit so CI results do not drift when
+# ruff's default selection changes between releases.
+target-version = "py311"
+line-length = 100
+
+[lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "UP",  # pyupgrade
+  "SIM", # flake8-simplify
+  "DTZ", # flake8-datetimez (naive datetimes)
+  "N",   # pep8-naming
+  "RUF", # ruff-specific rules
+  "C4",  # flake8-comprehensions
+  "PIE", # flake8-pie
+  "T20", # flake8-print
+  "RET", # flake8-return
+  "ARG", # flake8-unused-arguments
+  "ERA", # eradicate (commented-out code)
+]
+
+[lint.isort]
+known-first-party = ["app"]
