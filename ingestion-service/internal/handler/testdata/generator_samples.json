@@ -1,0 +1,223 @@
+{
+  "_comment": "Real output of scripts/generate_sample_data.py (seed 42, first 8 events per type, timestamps as emitted by datetime.isoformat()). Used by contract_test.go.",
+  "revenue_transaction": [
+    {
+      "transaction_id": "84b871bb-3005-68d2-0de0-51a669ca97d2",
+      "timestamp": "2025-01-01T16:52:00.689606+00:00",
+      "amount_cents": 3411,
+      "currency": "USD",
+      "customer_id": "e7c421c7-4049-7b71-7d10-6c6081627cf1",
+      "product_line": "api_usage",
+      "region": "us-east"
+    },
+    {
+      "transaction_id": "ed7bf656-218a-1536-8c99-a894445dcc38",
+      "timestamp": "2025-01-02T20:28:48.054118+00:00",
+      "amount_cents": 4183,
+      "currency": "USD",
+      "customer_id": "07a0ca6e-0822-e8f3-6c03-1199972a8469",
+      "product_line": "api_usage",
+      "region": "us-east"
+    },
+    {
+      "transaction_id": "8d03c91e-4f8d-5238-288b-78b5b5b453ca",
+      "timestamp": "2025-01-03T03:01:40.638448+00:00",
+      "amount_cents": 4070,
+      "currency": "USD",
+      "customer_id": "747b6dba-c8fe-3ccd-c8b8-d9c6ed3049cf",
+      "product_line": "api_usage",
+      "region": "eu-west"
+    },
+    {
+      "transaction_id": "d50755d9-a5d0-4d53-1e12-42e3f27292b6",
+      "timestamp": "2025-01-04T07:53:58.118972+00:00",
+      "amount_cents": 863,
+      "currency": "USD",
+      "customer_id": "894a05e4-30b1-87ef-310c-0c003fa7f104",
+      "product_line": "api_usage",
+      "region": "ap-southeast"
+    },
+    {
+      "transaction_id": "74eff545-3e65-2603-78e3-654bfaf14ff0",
+      "timestamp": "2025-01-05T16:45:17.435673+00:00",
+      "amount_cents": 2490,
+      "currency": "USD",
+      "customer_id": "90b2b633-956b-8c0c-a849-9b926b5252e3",
+      "product_line": "api_usage",
+      "region": "eu-west"
+    },
+    {
+      "transaction_id": "c5ce099c-46b8-2659-11df-12d7dd30de89",
+      "timestamp": "2025-01-06T19:32:47.922040+00:00",
+      "amount_cents": 13491,
+      "currency": "USD",
+      "customer_id": "f54ad0a2-e874-66d7-ad66-a1bd93676a02",
+      "product_line": "api_usage",
+      "region": "ap-southeast"
+    },
+    {
+      "transaction_id": "96418ced-d664-d264-4c6e-27ffb9de7a3a",
+      "timestamp": "2025-01-07T16:17:52.002689+00:00",
+      "amount_cents": 23274,
+      "currency": "USD",
+      "customer_id": "51d87c64-55fa-1ab8-458f-1f193c07c574",
+      "product_line": "professional_services",
+      "region": "us-east"
+    },
+    {
+      "transaction_id": "8b1e3b9d-c34b-9fbb-8d4a-75b8551ac8ea",
+      "timestamp": "2025-01-08T04:28:34.507868+00:00",
+      "amount_cents": 33089,
+      "currency": "USD",
+      "customer_id": "ab3b4d37-560c-95ee-638c-254c076e2bba",
+      "product_line": "professional_services",
+      "region": "ap-southeast"
+    }
+  ],
+  "usage_metric": [
+    {
+      "metric_id": "8b040f49-d0be-73ee-fd37-253965f202f9",
+      "timestamp": "2025-01-01T10:59:19.540418+00:00",
+      "customer_id": "7337c599-7984-4388-dc8a-ee30be6033f7",
+      "metric_type": "api_calls",
+      "quantity": 3269,
+      "unit": "calls"
+    },
+    {
+      "metric_id": "5e368127-cca1-b45c-1fdd-980a45f18619",
+      "timestamp": "2025-01-02T14:55:41.348048+00:00",
+      "customer_id": "e3e9de99-f10c-718b-1eb0-e38a675dd5af",
+      "metric_type": "api_calls",
+      "quantity": 3132,
+      "unit": "calls"
+    },
+    {
+      "metric_id": "ec9f9c54-5e0a-72ab-7f5d-b163b12b6680",
+      "timestamp": "2025-01-03T20:21:11.520306+00:00",
+      "customer_id": "eb1fa9f2-d10b-d1d0-3317-347038f16a81",
+      "metric_type": "tokens_processed",
+      "quantity": 48813,
+      "unit": "tokens"
+    },
+    {
+      "metric_id": "523ae993-4b34-46bc-8ba4-35cc2e326567",
+      "timestamp": "2025-01-04T02:27:38.862287+00:00",
+      "customer_id": "d4aac9a3-3ed8-c56c-da09-dfa052828d80",
+      "metric_type": "api_calls",
+      "quantity": 1354,
+      "unit": "calls"
+    },
+    {
+      "metric_id": "ba108217-0ad7-c9a2-7277-16ec59fefbbc",
+      "timestamp": "2025-01-05T20:10:44.465471+00:00",
+      "customer_id": "371ecd7b-27cd-8130-4722-9389571aa876",
+      "metric_type": "api_calls",
+      "quantity": 4844,
+      "unit": "calls"
+    },
+    {
+      "metric_id": "cd14a03e-8359-9af6-5d01-f55f67fd64c4",
+      "timestamp": "2025-01-06T14:04:42.668480+00:00",
+      "customer_id": "18c26797-6142-ea7d-17be-31111a2a73ed",
+      "metric_type": "api_calls",
+      "quantity": 7127,
+      "unit": "calls"
+    },
+    {
+      "metric_id": "5dc7b3e6-a529-64ff-c74c-c8903c6a3174",
+      "timestamp": "2025-01-07T21:02:08.070499+00:00",
+      "customer_id": "b386f7a4-c991-603f-28c1-3091444d610b",
+      "metric_type": "api_calls",
+      "quantity": 511,
+      "unit": "calls"
+    },
+    {
+      "metric_id": "c359810a-71a6-014c-5f3c-44dc5ef787b8",
+      "timestamp": "2025-01-08T16:43:28.994913+00:00",
+      "customer_id": "ce177b4e-0837-b8a3-d261-a7ab3aa2e4f9",
+      "metric_type": "api_calls",
+      "quantity": 9294,
+      "unit": "calls"
+    }
+  ],
+  "cost_record": [
+    {
+      "record_id": "658e54a2-9879-cf35-f471-99869d264599",
+      "timestamp": "2025-01-01T02:21:38.806360+00:00",
+      "cost_center": "ml-ops",
+      "category": "compute",
+      "amount_cents": 101215,
+      "currency": "USD",
+      "vendor": "Google Cloud",
+      "description": "Cloud Run ingestion service"
+    },
+    {
+      "record_id": "ae007b7e-2f8c-83e5-6e8d-9644601bfbcb",
+      "timestamp": "2025-01-02T07:22:35.986859+00:00",
+      "cost_center": "ml-ops",
+      "category": "compute",
+      "amount_cents": 193302,
+      "currency": "USD",
+      "vendor": "Google Cloud",
+      "description": "Cloud Functions triggers"
+    },
+    {
+      "record_id": "c8ad0899-b630-794d-6147-adeb277b0667",
+      "timestamp": "2025-01-03T22:04:05.280989+00:00",
+      "cost_center": "data-platform",
+      "category": "compute",
+      "amount_cents": 374332,
+      "currency": "USD",
+      "vendor": "Google Cloud",
+      "description": "Cloud Run ingestion service"
+    },
+    {
+      "record_id": "16591c89-21eb-faa9-1a2b-d69c450f69ee",
+      "timestamp": "2025-01-04T09:28:23.798329+00:00",
+      "cost_center": "engineering",
+      "category": "network",
+      "amount_cents": 46507,
+      "currency": "USD",
+      "vendor": "Google Cloud",
+      "description": "Inter-region egress"
+    },
+    {
+      "record_id": "991965ea-98d0-0c2c-17d3-0f328de1596c",
+      "timestamp": "2025-01-05T03:01:05.371106+00:00",
+      "cost_center": "customer-support",
+      "category": "storage",
+      "amount_cents": 48568,
+      "currency": "USD",
+      "vendor": "Google Cloud",
+      "description": "Artifact Registry images"
+    },
+    {
+      "record_id": "fe2390f3-e7bb-aefc-8f3d-c97fe6b0da0a",
+      "timestamp": "2025-01-06T12:49:05.760053+00:00",
+      "cost_center": "data-platform",
+      "category": "personnel",
+      "amount_cents": 212940,
+      "currency": "USD",
+      "description": "Training & certifications"
+    },
+    {
+      "record_id": "7e3d5ee4-44b6-4ec1-4d16-f04944d7df9a",
+      "timestamp": "2025-01-07T21:24:10.145584+00:00",
+      "cost_center": "customer-support",
+      "category": "personnel",
+      "amount_cents": 799743,
+      "currency": "USD",
+      "description": "Contractor payments"
+    },
+    {
+      "record_id": "f1b88d65-406f-64d6-5c72-aebd13b11e59",
+      "timestamp": "2025-01-08T13:19:30.820685+00:00",
+      "cost_center": "ml-ops",
+      "category": "compute",
+      "amount_cents": 137664,
+      "currency": "USD",
+      "vendor": "Google Cloud",
+      "description": "Dataflow pipeline workers"
+    }
+  ]
+}
