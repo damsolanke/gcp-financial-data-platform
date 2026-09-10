@@ -2,18 +2,18 @@
 
 from fastapi import APIRouter, HTTPException, Request
 
+from ..models.audit import AccessLogEntry, PermissionChangeEntry
 from ..models.rbac import (
-    AccessRequest,
-    AccessGrant,
-    AccessRevocation,
     AccessCheckResult,
-    Role,
+    AccessGrant,
+    AccessRequest,
+    AccessRevocation,
     Permission,
+    Role,
     User,
 )
-from ..models.audit import AccessLogEntry, PermissionChangeEntry
 from ..services.access_control import check_access
-from ..services.audit_logger import log_access, log_permission_change, get_access_logs
+from ..services.audit_logger import get_access_logs, log_access, log_permission_change
 
 router = APIRouter(prefix="/api/v1/access", tags=["access"])
 
@@ -198,7 +198,7 @@ async def get_audit_trail(dataset_id: str, limit: int = 100) -> list[AccessLogEn
 
 
 @router.post("/grant")
-async def grant_access(grant: AccessGrant, req: Request) -> dict:
+async def grant_access(grant: AccessGrant) -> dict:
     """Grant access to a user (admin only).
 
     Creates a log entry for the permission change. In a production system
@@ -206,7 +206,6 @@ async def grant_access(grant: AccessGrant, req: Request) -> dict:
 
     Args:
         grant: The grant request with admin, target user, dataset, and permission.
-        req: The raw HTTP request for extracting client metadata.
 
     Returns:
         Dictionary confirming the grant.
@@ -257,7 +256,7 @@ async def grant_access(grant: AccessGrant, req: Request) -> dict:
 
 
 @router.post("/revoke")
-async def revoke_access(revocation: AccessRevocation, req: Request) -> dict:
+async def revoke_access(revocation: AccessRevocation) -> dict:
     """Revoke access from a user (admin only).
 
     Creates a log entry for the permission change. In a production system
@@ -266,7 +265,6 @@ async def revoke_access(revocation: AccessRevocation, req: Request) -> dict:
     Args:
         revocation: The revocation request with admin, target user, dataset,
             and permission.
-        req: The raw HTTP request for extracting client metadata.
 
     Returns:
         Dictionary confirming the revocation.
