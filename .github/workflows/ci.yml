@@ -5,7 +5,10 @@
 # Each service / layer gets its own independent job so failures are isolated
 # and the matrix is easy to reason about from the Actions tab.
 #
-# Secrets required: none (CI is fully offline / dry-run).
+# Secrets required: none beyond the automatic GITHUB_TOKEN (gitleaks). CI does
+# not start emulators or talk to GCP: Go tests that need the Pub/Sub or
+# Bigtable emulator skip themselves, dbt only parses, Terraform only
+# validates.
 # =============================================================================
 
 name: CI
@@ -145,7 +148,7 @@ jobs:
                 type: bigquery
                 method: oauth
                 project: ci-dry-run-project
-                dataset: ci_dataset
+                dataset: fdp_dev
                 location: US
                 threads: 1
                 timeout_seconds: 30
