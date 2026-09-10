@@ -53,3 +53,50 @@ variable "labels" {
   type        = map(string)
   default     = {}
 }
+
+variable "artifact_registry_repo" {
+  description = "Artifact Registry repository the CD workflow pushes images to, e.g. us-central1-docker.pkg.dev/<project>/<repo> (the ARTIFACT_REGISTRY_REPO secret in .github/workflows/cd.yml). Images are <repo>/ingestion-service:<tag> and <repo>/governance-service:<tag>."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+-docker\\.pkg\\.dev/[^/]+/[^/]+$", var.artifact_registry_repo))
+    error_message = "artifact_registry_repo must look like <region>-docker.pkg.dev/<project>/<repository>."
+  }
+}
+
+variable "image_tag" {
+  description = "Image tag to deploy for both services. CD tags images with the 7-character commit SHA and also pushes :latest."
+  type        = string
+  default     = "latest"
+}
+
+variable "pubsub_validated_topic" {
+  description = "Short name of the validated-events topic (module.pubsub.validated_topic_name); exported to the ingestion service as PUBSUB_TOPIC_VALIDATED."
+  type        = string
+}
+
+variable "pubsub_dlq_topic" {
+  description = "Short name of the dead-letter topic (module.pubsub.dlq_topic_name); exported to the ingestion service as PUBSUB_TOPIC_DLQ."
+  type        = string
+}
+
+variable "bigtable_instance_name" {
+  description = "Bigtable instance name (module.bigtable.instance_name); exported to the ingestion service as BIGTABLE_INSTANCE_ID."
+  type        = string
+}
+
+variable "bigtable_table_name" {
+  description = "Bigtable table name (module.bigtable.table_name); exported to the ingestion service as BIGTABLE_TABLE_ID."
+  type        = string
+}
+
+variable "audit_dataset_id" {
+  description = "BigQuery audit dataset ID (module.bigquery.dataset_ids[\"audit\"], i.e. fdp_<env>_audit); exported to the governance service as BIGQUERY_DATASET_AUDIT."
+  type        = string
+}
+
+variable "log_level" {
+  description = "Log level exported to both services as LOG_LEVEL."
+  type        = string
+  default     = "info"
+}
