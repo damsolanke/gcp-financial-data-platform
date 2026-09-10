@@ -2,11 +2,19 @@
 # BigQuery Module
 # -----------------------------------------------------------------------------
 # This module provisions the analytical warehouse layer for the financial data
-# platform. The dataset topology follows the dbt-style medallion architecture:
-#   staging     -> raw ingested data, schema-enforced
-#   intermediate -> cleaned / joined data (not exposed to analysts)
-#   marts_*     -> business-domain datasets consumed by BI tools & APIs
-#   audit       -> immutable log of access, changes, and anomalies
+# platform. Every dataset is named fdp_<env>_<layer>; the same scheme is used
+# by dbt (profiles.yml + dbt_project.yml), the Airflow DAG, the governance
+# service and docker-compose. Layers:
+#   raw          -> landing tables written by the Airflow DAG; rows are event
+#                   payloads exactly as published (schemas/*.json)
+#   staging      -> dbt views (stg_*) that parse and dedupe the raw tables
+#   intermediate -> dbt ephemeral models; the dataset exists for ad-hoc use
+#   marts_*      -> business-domain tables built by dbt
+#   audit        -> immutable log of access, changes, anomalies, pipeline runs
+#
+# Only raw and audit tables are defined here. Terraform creates the staging
+# and marts datasets as empty containers: their contents are dbt-managed
+# relations (views/tables) and defining the same names here would collide.
 #
 # Separation into distinct datasets enables fine-grained IAM at the dataset
 # level, which is the smallest BigQuery scope that supports access controls
@@ -31,13 +39,26 @@ locals {
 # Datasets
 # ---------------------------------------------------------------------------
 
-# Staging: landing zone for validated events arriving from Pub/Sub and GCS.
-# Tables here mirror source schemas with added lineage columns.
+# Raw: landing zone for validated events pulled from Pub/Sub by the Airflow
+# DAG (load_to_staging task). This is the dbt `raw` source.
+resource "google_bigquery_dataset" "raw" {
+  project                     = var.project_id
+  dataset_id                  = "${local.dataset_prefix}_raw"
+  friendly_name               = "Raw - ${var.environment}"
+  description                 = "Landing tables for validated financial events, exactly as published to Pub/Sub plus ingestion_timestamp. Read by dbt staging views; never queried by analysts."
+  location                    = var.region
+  default_table_expiration_ms = null # Retained indefinitely; the raw layer is the replay source for dbt
+  delete_contents_on_destroy  = !var.deletion_protection
+  labels                      = local.common_labels
+}
+
+# Staging: dbt-owned views (stg_*) over the raw tables. Terraform creates the
+# dataset only; the views are created by `dbt run`.
 resource "google_bigquery_dataset" "staging" {
   project                     = var.project_id
   dataset_id                  = "${local.dataset_prefix}_staging"
   friendly_name               = "Staging - ${var.environment}"
-  description                 = "Landing zone for validated financial events. Data here is append-only and schema-enforced before promotion to intermediate."
+  description                 = "dbt staging layer: deduplicated, typed views over fdp_${var.environment}_raw. Contents are managed by dbt."
   location                    = var.region
   default_table_expiration_ms = null # Staging data is retained indefinitely; lifecycle managed by dbt snapshots
   delete_contents_on_destroy  = !var.deletion_protection
@@ -96,82 +117,85 @@ resource "google_bigquery_dataset" "audit" {
 }
 
 # ---------------------------------------------------------------------------
-# Staging Tables
+# Raw Landing Tables
 # ---------------------------------------------------------------------------
-# Each staging table mirrors the upstream source schema with added lineage
-# columns (surrogate_key, ingestion_timestamp, source_system) to enable
-# deduplication and auditing in the intermediate layer.
+# One table per event type. Columns are exactly the properties of the
+# corresponding JSON Schema in schemas/ (timestamp is kept as the published
+# ISO 8601 string; dbt's parse_event_timestamp macro converts it) plus
+# ingestion_timestamp, the BigQuery write time used for deduplication order,
+# incremental processing and the DAG's freshness check.
 
-resource "google_bigquery_table" "stg_revenue_transactions" {
+resource "google_bigquery_table" "raw_revenue_transactions" {
   project             = var.project_id
-  dataset_id          = google_bigquery_dataset.staging.dataset_id
-  table_id            = "stg_revenue_transactions"
+  dataset_id          = google_bigquery_dataset.raw.dataset_id
+  table_id            = "raw_revenue_transactions"
   deletion_protection = var.deletion_protection
   labels              = local.common_labels
 
-  # Revenue transactions are the highest-volume staging table.
-  # Schema is deliberately flat (no nested structs) to simplify dbt
-  # transformations and allow streaming inserts from the ingestion service.
+  time_partitioning {
+    type  = "DAY"
+    field = "ingestion_timestamp"
+  }
+
   schema = jsonencode([
-    { name = "transaction_id", type = "STRING", mode = "REQUIRED", description = "Unique transaction identifier from the source system" },
-    { name = "event_timestamp", type = "TIMESTAMP", mode = "REQUIRED", description = "When the transaction occurred in the source system" },
-    { name = "amount_cents", type = "INT64", mode = "REQUIRED", description = "Transaction amount in the smallest currency unit to avoid floating-point rounding" },
-    { name = "currency", type = "STRING", mode = "REQUIRED", description = "ISO 4217 currency code (e.g., USD, EUR)" },
-    { name = "customer_id", type = "STRING", mode = "REQUIRED", description = "Opaque customer identifier for join to customer dimension" },
-    { name = "product_line", type = "STRING", mode = "NULLABLE", description = "Product line classification for revenue segmentation" },
-    { name = "region", type = "STRING", mode = "NULLABLE", description = "Geographic region of the transaction for regulatory and reporting splits" },
-    { name = "metadata", type = "JSON", mode = "NULLABLE", description = "Schemaless metadata bag for source-specific fields not yet promoted to columns" },
-    { name = "surrogate_key", type = "STRING", mode = "REQUIRED", description = "SHA-256 hash of business key columns for deduplication in intermediate layer" },
-    { name = "ingestion_timestamp", type = "TIMESTAMP", mode = "REQUIRED", description = "When this row was written to BigQuery, used for incremental processing" },
-    { name = "source_system", type = "STRING", mode = "REQUIRED", description = "Identifier of the upstream system that produced this record" },
-  ])
-}
-
-resource "google_bigquery_table" "stg_usage_metrics" {
-  project             = var.project_id
-  dataset_id          = google_bigquery_dataset.staging.dataset_id
-  table_id            = "stg_usage_metrics"
-  deletion_protection = var.deletion_protection
-  labels              = local.common_labels
-
-  # Usage metrics track per-customer consumption events (API calls, storage,
-  # compute minutes). Quantity is FLOAT64 because some metrics are fractional
-  # (e.g., 0.25 vCPU-hours).
-  schema = jsonencode([
-    { name = "metric_id", type = "STRING", mode = "REQUIRED", description = "Unique metric event identifier" },
-    { name = "event_timestamp", type = "TIMESTAMP", mode = "REQUIRED", description = "When the usage event occurred" },
-    { name = "customer_id", type = "STRING", mode = "REQUIRED", description = "Customer to which this usage is attributed" },
-    { name = "metric_type", type = "STRING", mode = "REQUIRED", description = "Category of usage metric (e.g., api_calls, storage_gb, compute_minutes)" },
-    { name = "quantity", type = "FLOAT64", mode = "REQUIRED", description = "Measured quantity of the usage event" },
-    { name = "unit", type = "STRING", mode = "REQUIRED", description = "Unit of measurement for the quantity field" },
-    { name = "surrogate_key", type = "STRING", mode = "REQUIRED", description = "SHA-256 hash of business key columns for deduplication" },
-    { name = "ingestion_timestamp", type = "TIMESTAMP", mode = "REQUIRED", description = "BigQuery write timestamp for incremental processing" },
-    { name = "source_system", type = "STRING", mode = "REQUIRED", description = "Upstream system identifier" },
-  ])
-}
-
-resource "google_bigquery_table" "stg_cost_records" {
-  project             = var.project_id
-  dataset_id          = google_bigquery_dataset.staging.dataset_id
-  table_id            = "stg_cost_records"
-  deletion_protection = var.deletion_protection
-  labels              = local.common_labels
-
-  # Cost records capture internal and vendor spend. Kept separate from revenue
-  # because cost data typically arrives on a different cadence (daily batch vs.
-  # real-time streaming) and has its own set of dimensions.
-  schema = jsonencode([
-    { name = "record_id", type = "STRING", mode = "REQUIRED", description = "Unique cost record identifier" },
-    { name = "event_timestamp", type = "TIMESTAMP", mode = "REQUIRED", description = "When the cost was incurred" },
-    { name = "cost_center", type = "STRING", mode = "REQUIRED", description = "Organizational cost center for internal allocation" },
-    { name = "category", type = "STRING", mode = "REQUIRED", description = "Cost category (e.g., infrastructure, personnel, licensing)" },
-    { name = "amount_cents", type = "INT64", mode = "REQUIRED", description = "Cost amount in smallest currency unit" },
+    { name = "transaction_id", type = "STRING", mode = "REQUIRED", description = "Unique transaction identifier (UUID); deduplication key" },
+    { name = "timestamp", type = "STRING", mode = "REQUIRED", description = "ISO 8601 timestamp as published (parsed by dbt)" },
+    { name = "amount_cents", type = "INT64", mode = "REQUIRED", description = "Transaction amount in cents; always positive" },
     { name = "currency", type = "STRING", mode = "REQUIRED", description = "ISO 4217 currency code" },
-    { name = "vendor", type = "STRING", mode = "NULLABLE", description = "External vendor name, null for internal costs" },
-    { name = "description", type = "STRING", mode = "NULLABLE", description = "Human-readable description of the cost line item" },
-    { name = "surrogate_key", type = "STRING", mode = "REQUIRED", description = "SHA-256 hash of business key columns for deduplication" },
-    { name = "ingestion_timestamp", type = "TIMESTAMP", mode = "REQUIRED", description = "BigQuery write timestamp for incremental processing" },
-    { name = "source_system", type = "STRING", mode = "REQUIRED", description = "Upstream system identifier" },
+    { name = "customer_id", type = "STRING", mode = "REQUIRED", description = "Customer identifier" },
+    { name = "product_line", type = "STRING", mode = "REQUIRED", description = "api_usage | enterprise_license | professional_services" },
+    { name = "region", type = "STRING", mode = "REQUIRED", description = "us-east | us-west | eu-west | ap-southeast" },
+    { name = "metadata", type = "JSON", mode = "NULLABLE", description = "Optional key-value metadata object from the event" },
+    { name = "ingestion_timestamp", type = "TIMESTAMP", mode = "REQUIRED", description = "When this row was written to BigQuery" },
+  ])
+}
+
+resource "google_bigquery_table" "raw_usage_metrics" {
+  project             = var.project_id
+  dataset_id          = google_bigquery_dataset.raw.dataset_id
+  table_id            = "raw_usage_metrics"
+  deletion_protection = var.deletion_protection
+  labels              = local.common_labels
+
+  time_partitioning {
+    type  = "DAY"
+    field = "ingestion_timestamp"
+  }
+
+  # quantity is FLOAT64 because compute_hours is fractional (e.g. 0.25).
+  schema = jsonencode([
+    { name = "metric_id", type = "STRING", mode = "REQUIRED", description = "Unique metric event identifier (UUID); deduplication key" },
+    { name = "timestamp", type = "STRING", mode = "REQUIRED", description = "ISO 8601 timestamp as published (parsed by dbt)" },
+    { name = "customer_id", type = "STRING", mode = "REQUIRED", description = "Customer to which this usage is attributed" },
+    { name = "metric_type", type = "STRING", mode = "REQUIRED", description = "api_calls | tokens_processed | compute_hours" },
+    { name = "quantity", type = "FLOAT64", mode = "REQUIRED", description = "Measured quantity; non-negative" },
+    { name = "unit", type = "STRING", mode = "REQUIRED", description = "Unit of measurement (calls, tokens, hours)" },
+    { name = "ingestion_timestamp", type = "TIMESTAMP", mode = "REQUIRED", description = "When this row was written to BigQuery" },
+  ])
+}
+
+resource "google_bigquery_table" "raw_cost_records" {
+  project             = var.project_id
+  dataset_id          = google_bigquery_dataset.raw.dataset_id
+  table_id            = "raw_cost_records"
+  deletion_protection = var.deletion_protection
+  labels              = local.common_labels
+
+  time_partitioning {
+    type  = "DAY"
+    field = "ingestion_timestamp"
+  }
+
+  schema = jsonencode([
+    { name = "record_id", type = "STRING", mode = "REQUIRED", description = "Unique cost record identifier (UUID); deduplication key" },
+    { name = "timestamp", type = "STRING", mode = "REQUIRED", description = "ISO 8601 timestamp as published (parsed by dbt)" },
+    { name = "cost_center", type = "STRING", mode = "REQUIRED", description = "Cost center responsible for the expenditure" },
+    { name = "category", type = "STRING", mode = "REQUIRED", description = "compute | storage | network | personnel" },
+    { name = "amount_cents", type = "INT64", mode = "REQUIRED", description = "Cost in cents; may be negative for credits" },
+    { name = "currency", type = "STRING", mode = "REQUIRED", description = "ISO 4217 currency code" },
+    { name = "vendor", type = "STRING", mode = "NULLABLE", description = "External vendor name, if applicable" },
+    { name = "description", type = "STRING", mode = "NULLABLE", description = "Human-readable description of the cost" },
+    { name = "ingestion_timestamp", type = "TIMESTAMP", mode = "REQUIRED", description = "When this row was written to BigQuery" },
   ])
 }
 
