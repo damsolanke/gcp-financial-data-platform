@@ -8,6 +8,8 @@ This runbook covers granting, verifying, and auditing data access for new users 
 
 All data access is governed by Role-Based Access Control (RBAC). Users are assigned a single role that determines which datasets they can access and at what permission level. Every access check and permission change is logged to the audit trail.
 
+RBAC patterns use the *logical* layer name (`marts_finance.<table>`, `staging.<table>`); the physical BigQuery datasets are `fdp_<env>_<layer>` (for example `fdp_prod_marts_finance`). The governance service's user store and audit log are in-memory in this reference implementation (`governance/app/routes/access.py`, `governance/app/services/audit_logger.py`); entries do not survive a restart and are not written to BigQuery.
+
 ### Available Roles
 
 | Role | Datasets Accessible | Permission | Typical Job Function |
@@ -60,12 +62,12 @@ What is the user's job function?
 
 ## Step 2: Create User Entry in Governance Service
 
-### Option A: API Request (Recommended)
+### Option A: Add to the User Store
 
-Submit a POST request to create the user. This must be executed by an admin.
+Users exist only in the `USERS` dictionary in `governance/app/routes/access.py`; the grant endpoint records the permission change for an *existing* user and returns 404 for an unknown `target_user_id`. Add the user there first (see Option B), deploy, then record the grant:
 
 ```bash
-# Create the user entry
+# Record the grant in the permission-change audit log
 curl -X POST http://governance-service:8081/api/v1/access/grant \
   -H "Content-Type: application/json" \
   -d '{
@@ -84,11 +86,9 @@ curl -X POST http://governance-service:8081/api/v1/access/grant \
 - `permission`: `read`, `write`, or `admin`
 - `reason`: Free-text justification (required for audit trail)
 
-### Option B: Add to User Store Directly
+### Option B: Edit the User Store
 
-For initial platform setup or bulk onboarding, add users directly to the governance service user store.
-
-The user store is defined in `governance/app/routes/access.py` (the `USERS` dictionary). In a production deployment, this would be backed by a database or identity provider.
+The user store is the `USERS` dictionary in `governance/app/routes/access.py`. In a production deployment this would be backed by a database or identity provider.
 
 ```python
 # Example: Add a new finance analyst
@@ -104,7 +104,7 @@ The user store is defined in `governance/app/routes/access.py` (the `USERS` dict
 After adding the user, restart the governance service to pick up the change:
 
 ```bash
-kubectl rollout restart deployment/governance-service -n financial-data
+kubectl rollout restart deployment/governance-service -n data-services
 ```
 
 ---
@@ -115,19 +115,23 @@ The governance service RBAC controls application-level access. For users who als
 
 ### Generate Terraform IAM Bindings
 
+The IAM sync is a library (`governance/app/services/iam_sync.py`), not an HTTP endpoint. Generate the HCL from the RBAC matrix:
+
 ```bash
-# Generate Terraform HCL for BigQuery IAM bindings
-curl http://governance-service:8081/api/v1/policies/iam-sync/terraform \
-  -H "Content-Type: application/json" \
-  -d '{
-    "service_account_emails": {
-      "finance_analyst": "analyst-sa@PROJECT_ID.iam.gserviceaccount.com",
-      "data_engineer": "engineer-sa@PROJECT_ID.iam.gserviceaccount.com",
-      "executive": "exec-sa@PROJECT_ID.iam.gserviceaccount.com",
-      "auditor": "auditor-sa@PROJECT_ID.iam.gserviceaccount.com"
-    }
-  }'
+cd governance && python - <<'PY' > generated_iam.tf
+from app.models.rbac import Role
+from app.services.iam_sync import generate_terraform_iam
+
+print(generate_terraform_iam({
+    Role.FINANCE_ANALYST: "analyst-sa@PROJECT_ID.iam.gserviceaccount.com",
+    Role.DATA_ENGINEER: "engineer-sa@PROJECT_ID.iam.gserviceaccount.com",
+    Role.EXECUTIVE: "exec-sa@PROJECT_ID.iam.gserviceaccount.com",
+    Role.AUDITOR: "auditor-sa@PROJECT_ID.iam.gserviceaccount.com",
+}))
+PY
 ```
+
+The generated blocks use the logical pattern (`marts_finance.*`) as `dataset_id`; replace it with the physical `fdp_<env>_marts_finance` dataset and drop the `.*` before applying.
 
 ### Apply IAM Bindings
 
@@ -199,14 +203,17 @@ curl "http://governance-service:8081/api/v1/access/check/NEW_USER_ID/marts_finan
 
 ## Step 5: Document in Permission Change Audit Log
 
-Every access grant is automatically logged by the governance service. Verify the audit entry was created:
+Every grant is logged by the governance service (`log_permission_change`). The HTTP audit endpoint only exposes *access-check* entries per dataset; permission changes are read in-process:
 
 ```bash
-# Check the audit trail for the new user's permission grants
+# Access-check trail for a dataset (what the API exposes)
 curl http://governance-service:8081/api/v1/access/audit/marts_finance.fct_daily_revenue_summary?limit=5
+
+# Permission changes (in-memory; run inside the service process)
+cd governance && python -c "from app.services.audit_logger import get_permission_changes; print(get_permission_changes(limit=5))"
 ```
 
-The audit entry includes:
+Each permission-change entry includes:
 - `log_id`: Unique identifier for this audit record
 - `timestamp`: When the grant was made
 - `admin_user_id`: Who approved the access
@@ -225,29 +232,33 @@ Access should be reviewed quarterly. The following queries support the review:
 ### List All Active Users and Their Roles
 
 ```bash
-curl http://governance-service:8081/api/v1/policies/users
+# Users live in the in-memory store; the policy matrix is exposed over HTTP
+grep -n "user_id=" governance/app/routes/access.py
+curl http://governance-service:8081/api/v1/access/policies
 ```
 
 ### Review Permission Changes in the Last Quarter
 
 ```bash
-curl http://governance-service:8081/api/v1/policies/changes?limit=500
+cd governance && python -c "from app.services.audit_logger import get_permission_changes; print(get_permission_changes(limit=500))"
 ```
 
 ### Identify Unused Access
 
 ```bash
 # Query the access log to find users who have not accessed their granted datasets
-# in the last 90 days
+# in the last 90 days. NOTE: nothing writes these BigQuery tables yet (the
+# governance service keeps its audit log in memory), so this query is the
+# intended shape once the BigQuery sink is wired.
 bq query --use_legacy_sql=false \
   "WITH granted_users AS (
      SELECT DISTINCT target_user_id AS user_id, dataset_id
-     FROM audit.permission_changes
+     FROM fdp_prod_audit.permission_changes
      WHERE action = 'grant'
    ),
    recent_access AS (
      SELECT DISTINCT user_id, dataset_id
-     FROM audit.access_log
+     FROM fdp_prod_audit.access_log
      WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)
        AND result = 'granted'
    )
@@ -308,4 +319,4 @@ curl http://governance-service:8081/api/v1/access/check/DEPARTING_USER_ID/marts_
 | Access denied when it should be granted | Wrong role assigned, or dataset pattern does not match | Verify role in user store, check glob pattern |
 | Access granted when it should be denied | Role has broader permissions than intended | Review RBAC matrix in `governance/app/models/rbac.py` |
 | IAM binding not taking effect | Terraform not applied, or wrong service account | Re-run IAM sync (Step 3), verify service account email |
-| Audit log entry missing | Governance service restarted before async write completed | In-memory store issue; production BigQuery backend resolves this |
+| Audit log entry missing | Governance service restarted (the audit store is in-memory) | Expected in this reference implementation; a BigQuery sink is a follow-up |
