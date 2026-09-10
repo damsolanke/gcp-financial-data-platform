@@ -19,7 +19,7 @@ variable "environment" {
 }
 
 variable "bigquery_datasets" {
-  description = "Map of logical dataset names to their BigQuery dataset IDs. Used to create dataset-level IAM bindings. Expected keys: staging, intermediate, marts_finance, marts_analytics, audit."
+  description = "Map of logical dataset names to their BigQuery dataset IDs. Used to create dataset-level IAM bindings. Expected keys: raw, staging, intermediate, marts_finance, marts_analytics, audit."
   type        = map(string)
 
   validation {
