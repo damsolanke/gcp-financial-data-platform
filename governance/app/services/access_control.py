@@ -7,12 +7,13 @@ data classification level).
 """
 
 from fnmatch import fnmatch
+
 from ..models.rbac import (
-    Role,
-    Permission,
-    AccessDecision,
-    AccessCheckResult,
     ROLE_PERMISSIONS,
+    AccessCheckResult,
+    AccessDecision,
+    Permission,
+    Role,
 )
 
 

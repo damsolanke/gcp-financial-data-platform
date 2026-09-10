@@ -9,8 +9,7 @@ This ensures the BigQuery-level permissions always match the application RBAC.
 
 from typing import Any
 
-from ..models.rbac import ROLE_PERMISSIONS, Role, Permission
-
+from ..models.rbac import ROLE_PERMISSIONS, Permission, Role
 
 # Mapping from application roles to GCP IAM roles
 ROLE_TO_GCP_IAM: dict[tuple[Role, Permission], str] = {
@@ -148,11 +147,14 @@ def validate_bindings(bindings: list[dict[str, Any]]) -> list[str]:
             )
 
         # Check that member uses a service account, not a user email
-        if member and not member.startswith("serviceAccount:"):
-            if member not in ("allUsers", "allAuthenticatedUsers"):
-                violations.append(
-                    f"Binding {i}: member '{member}' is not a service account. "
-                    f"All bindings must use service accounts, not user emails."
-                )
+        if (
+            member
+            and not member.startswith("serviceAccount:")
+            and member not in ("allUsers", "allAuthenticatedUsers")
+        ):
+            violations.append(
+                f"Binding {i}: member '{member}' is not a service account. "
+                f"All bindings must use service accounts, not user emails."
+            )
 
     return violations
