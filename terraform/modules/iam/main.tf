@@ -8,7 +8,7 @@
 #   ingestion-sa  : publishes to Pub/Sub, reads/writes Bigtable
 #   governance-sa : reads audit data, runs BigQuery jobs for compliance
 #   airflow-sa    : orchestrates pipelines, reads GCS, writes BigQuery
-#   dbt-sa        : transforms data across staging/intermediate/marts
+#   dbt-sa        : reads raw, transforms data across staging/intermediate/marts
 #
 # Dataset-level IAM is used for BigQuery because it's the narrowest scope
 # that doesn't require per-table bindings (which don't scale well with
@@ -132,7 +132,15 @@ resource "google_bigquery_dataset_iam_member" "governance_audit_viewer" {
 }
 
 # Airflow SA: editor access to all datasets because Airflow orchestrates
-# both ingestion (writes to staging) and dbt runs (writes to all layers).
+# both ingestion (MERGE into the raw landing tables) and dbt runs (writes to
+# all layers).
+resource "google_bigquery_dataset_iam_member" "airflow_raw_editor" {
+  project    = var.project_id
+  dataset_id = var.bigquery_datasets["raw"]
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${google_service_account.airflow.email}"
+}
+
 resource "google_bigquery_dataset_iam_member" "airflow_staging_editor" {
   project    = var.project_id
   dataset_id = var.bigquery_datasets["staging"]
@@ -161,8 +169,15 @@ resource "google_bigquery_dataset_iam_member" "airflow_marts_analytics_editor" {
   member     = "serviceAccount:${google_service_account.airflow.email}"
 }
 
-# dbt SA: editor access to staging, intermediate, and mart datasets.
-# dbt needs to create/replace tables and views in these datasets.
+# dbt SA: read-only on the raw landing tables (its sources), editor access to
+# staging, intermediate, and mart datasets where it creates views and tables.
+resource "google_bigquery_dataset_iam_member" "dbt_raw_viewer" {
+  project    = var.project_id
+  dataset_id = var.bigquery_datasets["raw"]
+  role       = "roles/bigquery.dataViewer"
+  member     = "serviceAccount:${google_service_account.dbt.email}"
+}
+
 resource "google_bigquery_dataset_iam_member" "dbt_staging_editor" {
   project    = var.project_id
   dataset_id = var.bigquery_datasets["staging"]

@@ -1,6 +1,7 @@
 output "dataset_ids" {
   description = "Map of logical dataset names to their BigQuery dataset IDs, used by downstream modules (IAM, dbt, Composer) to reference datasets."
   value = {
+    raw             = google_bigquery_dataset.raw.dataset_id
     staging         = google_bigquery_dataset.staging.dataset_id
     intermediate    = google_bigquery_dataset.intermediate.dataset_id
     marts_finance   = google_bigquery_dataset.marts_finance.dataset_id
@@ -9,12 +10,12 @@ output "dataset_ids" {
   }
 }
 
-output "staging_table_ids" {
-  description = "Map of staging table names to their fully qualified table IDs, used by ingestion services to target writes."
+output "raw_table_ids" {
+  description = "Map of raw landing table names to their table IDs in the fdp_<env>_raw dataset, the MERGE targets of the Airflow load_to_staging task and the dbt raw source."
   value = {
-    stg_revenue_transactions = google_bigquery_table.stg_revenue_transactions.table_id
-    stg_usage_metrics        = google_bigquery_table.stg_usage_metrics.table_id
-    stg_cost_records         = google_bigquery_table.stg_cost_records.table_id
+    raw_revenue_transactions = google_bigquery_table.raw_revenue_transactions.table_id
+    raw_usage_metrics        = google_bigquery_table.raw_usage_metrics.table_id
+    raw_cost_records         = google_bigquery_table.raw_cost_records.table_id
   }
 }
 
