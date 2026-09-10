@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/adesolanke/gcp-financial-data-platform/schemas/usage_metric.json",
+  "$id": "https://github.com/damsolanke/gcp-financial-data-platform/schemas/usage_metric.json",
   "title": "Usage Metric",
   "description": "A usage metric event tracking customer consumption of platform resources.",
   "type": "object",

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/adesolanke/gcp-financial-data-platform/schemas/revenue_transaction.json",
+  "$id": "https://github.com/damsolanke/gcp-financial-data-platform/schemas/revenue_transaction.json",
   "title": "Revenue Transaction",
   "description": "A financial revenue transaction event from billing or payment systems.",
   "type": "object",
