@@ -246,3 +246,42 @@ models:
           - not_null
       - name: source_system
         description: Identifier for the ingestion pipeline that produced this record.
+
+# Unit tests (dbt >= 1.8) for the parse_event_timestamp macro, exercised
+# through the staging models that use it. They run with `dbt test
+# --select test_type:unit` against BigQuery (unit tests execute SQL in the
+# warehouse); `dbt parse` validates them offline.
+unit_tests:
+  - name: parse_event_timestamp_accepts_every_producer_format
+    description: >
+      Every timestamp shape a producer emits must parse to the same instant:
+      microseconds with a numeric offset (scripts/generate_sample_data.py),
+      a bare Z suffix (README / hand-written clients), and a fractional
+      second with a non-UTC offset.
+    model: stg_revenue_transactions
+    given:
+      - input: source('raw', 'raw_revenue_transactions')
+        rows:
+          - {transaction_id: 'generator-micro-offset', timestamp: '2025-01-15T10:30:00.123456+00:00', amount_cents: 1500, currency: 'USD', customer_id: 'c1', product_line: 'api_usage', region: 'us-east', ingestion_timestamp: '2025-01-15 10:31:00+00'}
+          - {transaction_id: 'handwritten-z', timestamp: '2025-01-15T10:30:00Z', amount_cents: 1500, currency: 'USD', customer_id: 'c1', product_line: 'api_usage', region: 'us-east', ingestion_timestamp: '2025-01-15 10:31:00+00'}
+          - {transaction_id: 'fraction-nonutc-offset', timestamp: '2025-01-15T22:30:00.5-05:00', amount_cents: 1500, currency: 'USD', customer_id: 'c1', product_line: 'api_usage', region: 'us-east', ingestion_timestamp: '2025-01-15 10:31:00+00'}
+    expect:
+      rows:
+        - {transaction_id: 'generator-micro-offset', event_timestamp: '2025-01-15 10:30:00.123456+00', event_date: '2025-01-15'}
+        - {transaction_id: 'handwritten-z', event_timestamp: '2025-01-15 10:30:00+00', event_date: '2025-01-15'}
+        - {transaction_id: 'fraction-nonutc-offset', event_timestamp: '2025-01-16 03:30:00.5+00', event_date: '2025-01-16'}
+
+  - name: parse_event_timestamp_survives_deduplication
+    description: >
+      The same macro is used by every staging model. For cost records the
+      latest ingestion_timestamp must win and its (fractional) timestamp
+      must be the one parsed.
+    model: stg_cost_records
+    given:
+      - input: source('raw', 'raw_cost_records')
+        rows:
+          - {record_id: 'r1', timestamp: '2025-02-01T08:00:00Z', cost_center: 'engineering', category: 'compute', amount_cents: 50000, currency: 'USD', ingestion_timestamp: '2025-02-01 09:00:00+00'}
+          - {record_id: 'r1', timestamp: '2025-02-01T08:00:00.250000+00:00', cost_center: 'engineering', category: 'compute', amount_cents: 50000, currency: 'USD', ingestion_timestamp: '2025-02-02 09:00:00+00'}
+    expect:
+      rows:
+        - {record_id: 'r1', event_timestamp: '2025-02-01 08:00:00.25+00', event_date: '2025-02-01', ingestion_timestamp: '2025-02-02 09:00:00+00'}
