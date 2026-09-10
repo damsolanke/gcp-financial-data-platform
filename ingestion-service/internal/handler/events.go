@@ -176,8 +176,11 @@ func (h *EventHandler) HandleIngestEvent(w http.ResponseWriter, r *http.Request)
 		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
+	// Publish the validated payload (event_type stripped, if it was present)
+	// so that every message on the validated topic conforms exactly to the
+	// JSON Schema contract in schemas/. See contract_test.go.
 	publishStart := time.Now()
-	publishID, err := h.publisher.Publish(r.Context(), body, attrs)
+	publishID, err := h.publisher.Publish(r.Context(), validationBody, attrs)
 	h.metrics.PublishLatency.WithLabelValues("validated").Observe(time.Since(publishStart).Seconds())
 
 	if err != nil {
@@ -202,7 +205,7 @@ func (h *EventHandler) HandleIngestEvent(w http.ResponseWriter, r *http.Request)
 	}
 
 	btStart := time.Now()
-	if err := h.writer.WriteEvent(r.Context(), eventType, eventID, eventTimestamp, body, attrs); err != nil {
+	if err := h.writer.WriteEvent(r.Context(), eventType, eventID, eventTimestamp, validationBody, attrs); err != nil {
 		h.logger.Error().Err(err).
 			Str("event_type", eventType).
 			Str("event_id", eventID).
