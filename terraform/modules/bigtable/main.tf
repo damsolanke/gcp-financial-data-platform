@@ -7,9 +7,11 @@
 # access to recent financial events (e.g., fraud detection, duplicate
 # detection, real-time dashboards).
 #
-# Row key design: {customer_id}#{reverse_timestamp}#{event_type}
-# This enables efficient scans of recent events per customer while
-# distributing writes across regions of the keyspace.
+# Row key (written by ingestion-service/internal/bigtable/writer.go RowKey):
+#   {event_type}#{math.MaxInt64 - event_unix_ms}#{event_id}
+# The reverse timestamp makes the newest events sort first within each
+# event-type prefix, so "recent revenue_transaction events" is a short
+# prefix scan; the event ID suffix keeps keys unique and writes idempotent.
 # -----------------------------------------------------------------------------
 
 locals {
@@ -49,23 +51,23 @@ resource "google_bigtable_table" "financial_events" {
   instance_name = google_bigtable_instance.financial_events.name
   name          = "financial_events"
 
-  # event_data: the primary payload columns (amount, currency, metadata, etc.)
+  # event_data: column "raw" holds the validated JSON payload.
   # Retained for 90 days because real-time services rarely need older data;
   # historical queries go to BigQuery instead.
   column_family {
     family = "event_data"
   }
 
-  # metadata: ingestion lineage (source_system, ingestion_timestamp, etc.)
-  # Only the latest version is kept because metadata is overwritten on
-  # re-processing, not appended.
+  # metadata: one column per Pub/Sub message attribute (event_type, event_id,
+  # timestamp). Only the latest version is kept because metadata is
+  # overwritten on re-processing, not appended.
   column_family {
     family = "metadata"
   }
 
-  # processing_status: tracks whether the event has been validated, enriched,
-  # and loaded into BigQuery. Three versions retained so the ingestion service
-  # can inspect the processing history for debugging failed events.
+  # processing_status: received_at / validated_at timestamps written by the
+  # ingestion service. Three versions retained so the processing history of
+  # re-delivered events can be inspected.
   column_family {
     family = "processing_status"
   }
