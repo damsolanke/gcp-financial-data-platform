@@ -1,6 +1,8 @@
 # Governance Service (Module D)
 
-RBAC-based access control and audit logging for the GCP Financial Data Platform. Enforces role-based permissions on BigQuery datasets and produces a full audit trail for SOX/ITGC compliance.
+RBAC-based access control and audit logging for the GCP Financial Data Platform. Evaluates role-based permissions on dataset patterns and records every check, grant and revoke.
+
+What is real in this reference implementation: the RBAC engine, the HTTP API, and the IAM-binding generator/validator, all covered by 110 tests. The user store (`app/routes/access.py`, `USERS`) and the audit log (`app/services/audit_logger.py`) are in-memory; nothing is written to BigQuery yet, and `iam_sync` generates Terraform HCL / binding dicts without applying them.
 
 ## API Endpoints
 
@@ -16,7 +18,7 @@ RBAC-based access control and audit logging for the GCP Financial Data Platform.
 
 ## RBAC Model
 
-Roles map to job functions. Each role is granted a set of permissions on dataset patterns using glob-style matching.
+Roles map to job functions. Each role is granted a set of permissions on dataset patterns using glob-style matching. Patterns use the *logical* layer name (`marts_finance.<table>`); the physical BigQuery dataset is `fdp_<env>_<layer>` (see `terraform/modules/bigquery`).
 
 | Role | Dataset Pattern | Permissions |
 |------|----------------|-------------|
@@ -26,6 +28,19 @@ Roles map to job functions. Each role is granted a set of permissions on dataset
 | `data_engineer` | `marts_analytics.*` | read |
 | `executive` | `marts_finance.*`, `marts_analytics.*` | read |
 | `auditor` | `audit.*` | read |
+
+## Configuration
+
+All settings come from the environment (`app/config.py`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8081` | HTTP listen port (Dockerfile and the Kubernetes module use 8081) |
+| `LOG_LEVEL` | `info` | Log level |
+| `ENVIRONMENT` | `dev` | `dev`, `staging` or `prod`; also derives the audit dataset |
+| `BIGQUERY_PROJECT_ID` | `local-project` | GCP project for the (future) BigQuery audit sink |
+| `BIGQUERY_DATASET_AUDIT` | `fdp_<ENVIRONMENT>_audit` | Audit dataset, following the platform's `fdp_<env>_<layer>` scheme |
+| `SECRET_KEY` | `change-me-in-production` | Token signing secret (no endpoint issues tokens yet) |
 
 ## Local Development
 
@@ -37,10 +52,12 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8081
 ```
 
-## Testing
+## Testing and Linting
 
 ```bash
 pytest tests/ -v --cov=app --cov-report=term-missing
+ruff check .                          # rule set pinned in ruff.toml
+mypy app/ --ignore-missing-imports
 ```
 
 ## Docker
