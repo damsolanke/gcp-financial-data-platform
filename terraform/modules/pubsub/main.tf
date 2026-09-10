@@ -26,32 +26,13 @@ locals {
 }
 
 # ---------------------------------------------------------------------------
-# Schema
+# Topic schema
 # ---------------------------------------------------------------------------
-# Schema enforcement at the Pub/Sub level provides a first line of defense
-# against malformed messages before they reach the processing pipeline.
-# This catches issues at publish time rather than at processing time,
-# reducing DLQ volume and alerting lag.
-
-resource "google_pubsub_schema" "revenue_transaction_schema" {
-  project = var.project_id
-  name    = "revenue-transaction-schema-${var.environment}"
-  type    = "AVRO"
-  definition = jsonencode({
-    type = "record"
-    name = "RevenueTransaction"
-    fields = [
-      { name = "transaction_id", type = "string" },
-      { name = "event_timestamp", type = "string" },
-      { name = "amount_cents", type = "long" },
-      { name = "currency", type = "string" },
-      { name = "customer_id", type = "string" },
-      { name = "product_line", type = ["null", "string"], default = null },
-      { name = "region", type = ["null", "string"], default = null },
-      { name = "source_system", type = "string" },
-    ]
-  })
-}
+# The validated topic deliberately has NO Pub/Sub schema attached. The
+# ingestion service is the single publisher and validates every payload
+# against schemas/*.json (Draft-07) before publishing; a Pub/Sub schema would
+# be a second, weaker copy of that contract that could only describe one of
+# the three event types the topic carries. See README.md in this module.
 
 # ---------------------------------------------------------------------------
 # Topics
@@ -64,15 +45,6 @@ resource "google_pubsub_topic" "validated" {
   name                       = "financial-events-validated-${var.environment}"
   message_retention_duration = var.message_retention_duration
   labels                     = local.common_labels
-
-  # Bind the schema to enforce message structure at publish time.
-  # JSON encoding is used because it's human-readable in logs and debugging.
-  schema_settings {
-    schema   = google_pubsub_schema.revenue_transaction_schema.id
-    encoding = "JSON"
-  }
-
-  depends_on = [google_pubsub_schema.revenue_transaction_schema]
 }
 
 # Dead-letter topic. No schema enforcement here because DLQ messages may
