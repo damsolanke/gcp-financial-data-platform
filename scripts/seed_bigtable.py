@@ -2,17 +2,20 @@
 """Seed the BigTable emulator with generated JSONL financial data.
 
 Reads JSONL files produced by generate_sample_data.py and writes them into
-the BigTable emulator using the row-key format:
+the BigTable emulator using exactly the row key the Go ingestion service
+writes (ingestion-service/internal/bigtable/writer.go, RowKey):
 
     {event_type}#{reverse_timestamp_ms}#{event_id}
 
-where reverse_timestamp_ms = 9999999999999 - unix_timestamp_ms.  This gives
-natural reverse-chronological ordering within each event-type prefix scan.
+where reverse_timestamp_ms = (2**63 - 1) - unix_timestamp_ms, formatted with
+at least 13 digits (in practice 19). Later events therefore sort first
+within each event-type prefix.
 
-Column families:
-    event_data        -- single column "json" holding the raw JSON blob
+Column families (same qualifiers as the Go writer):
+    event_data        -- column "raw" holding the JSON payload
     metadata          -- indexed fields extracted from the event for quick lookup
-    processing_status -- tracks ingestion / processing timestamps
+    processing_status -- "received_at" / "validated_at" ISO 8601 timestamps,
+                         plus "source" = seed_bigtable.py to mark seeded rows
 
 Usage:
     export BIGTABLE_EMULATOR_HOST=localhost:8086
@@ -34,7 +37,7 @@ from typing import Any
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_REVERSE_TS: int = 9_999_999_999_999  # 13-digit ceiling for reverse ts
+MAX_REVERSE_TS: int = (1 << 63) - 1  # math.MaxInt64, as in writer.go RowKey
 
 PROJECT_ID: str = os.environ.get("GCP_PROJECT_ID", "local-project")
 INSTANCE_ID: str = os.environ.get("BIGTABLE_INSTANCE_ID", "financial-events")
@@ -105,7 +108,8 @@ def iso_to_unix_ms(iso_str: str) -> int:
 def make_row_key(event_type: str, timestamp_iso: str, event_id: str) -> str:
     """Build a BigTable row key with reverse-chronological ordering.
 
-    Format: {event_type}#{9999999999999 - unix_ms}#{event_id}
+    Format: {event_type}#{(2**63 - 1) - unix_ms:013d}#{event_id}, identical to
+    RowKey() in ingestion-service/internal/bigtable/writer.go.
     """
     unix_ms = iso_to_unix_ms(timestamp_iso)
     reverse_ts = MAX_REVERSE_TS - unix_ms
@@ -249,10 +253,10 @@ def seed_event_type(
 
         row = table.direct_row(row_key)
 
-        # event_data: raw JSON blob
+        # event_data: raw JSON payload (column "raw", as the Go writer)
         row.set_cell(
             "event_data",
-            "json",
+            "raw",
             json.dumps(record).encode("utf-8"),
         )
 
@@ -266,10 +270,15 @@ def seed_event_type(
                     str(value).encode("utf-8"),
                 )
 
-        # processing_status: ingestion timestamp
+        # processing_status: same qualifiers the Go writer sets
         row.set_cell(
             "processing_status",
-            "ingested_at",
+            "received_at",
+            now_iso.encode("utf-8"),
+        )
+        row.set_cell(
+            "processing_status",
+            "validated_at",
             now_iso.encode("utf-8"),
         )
         row.set_cell(
