@@ -1,4 +1,4 @@
-module github.com/adesolanke/gcp-financial-data-platform/ingestion-service
+module github.com/damsolanke/gcp-financial-data-platform/ingestion-service
 
 go 1.24
 

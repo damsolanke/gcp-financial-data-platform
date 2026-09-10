@@ -34,12 +34,12 @@ func validUsageMetric() map[string]interface{} {
 // validCostRecord returns a valid cost_record event as a map.
 func validCostRecord() map[string]interface{} {
 	return map[string]interface{}{
-		"record_id":   "770e8400-e29b-41d4-a716-446655440002",
-		"timestamp":   "2025-01-15T10:30:00Z",
-		"cost_center": "engineering",
-		"category":    "compute",
+		"record_id":    "770e8400-e29b-41d4-a716-446655440002",
+		"timestamp":    "2025-01-15T10:30:00Z",
+		"cost_center":  "engineering",
+		"category":     "compute",
 		"amount_cents": 50000,
-		"currency":    "USD",
+		"currency":     "USD",
 	}
 }
 
