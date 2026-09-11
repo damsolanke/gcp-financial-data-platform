@@ -55,7 +55,7 @@ def architecture_diagram():
 
         # --- Write path ---
         with Cluster(
-            "Write Path  ·  Go  ·  P99 <100ms",
+            "Write Path  ·  Go",
             graph_attr={
                 "bgcolor": "#E8F5E9",
                 "style": "rounded",
@@ -126,7 +126,7 @@ def architecture_diagram():
 
         # --- Read path ---
         with Cluster(
-            "Read Path  ·  FastAPI  ·  P99 <50ms",
+            "Read Path  ·  FastAPI",
             graph_attr={
                 "bgcolor": "#FFF3E0",
                 "style": "rounded",
