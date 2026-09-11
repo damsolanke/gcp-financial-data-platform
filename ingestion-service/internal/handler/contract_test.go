@@ -19,8 +19,8 @@ import (
 // The JSON Schemas in schemas/ at the repository root are the contract that
 // every message published to the validated Pub/Sub topic must satisfy. The
 // ingestion service embeds a copy of them (internal/validator/schemas) because
-// go:embed cannot follow symlinks. This file guards both halves of that
-// arrangement:
+// the go:embed directive cannot follow symlinks. This file guards both halves
+// of that arrangement:
 //
 //  1. the embedded copies are byte-identical to the canonical schemas, and
 //  2. every payload the handler hands to the publisher -- hand-written samples
