@@ -2,7 +2,7 @@
 # Production Environment
 # -----------------------------------------------------------------------------
 # This is the production environment root module. It wires together all
-# platform modules with production-grade settings:
+# platform modules with production settings:
 #   - Deletion protection enabled on all stateful resources
 #   - Higher node counts and replica counts for throughput and availability
 #   - Medium Composer environment with HA scheduler
