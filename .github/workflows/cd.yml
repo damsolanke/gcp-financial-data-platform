@@ -152,6 +152,7 @@ jobs:
       - name: Terraform plan
         id: plan
         run: |
+          set +e
           terraform plan \
             -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
             -var="artifact_registry_repo=${{ secrets.ARTIFACT_REGISTRY_REPO }}" \
@@ -160,6 +161,10 @@ jobs:
             -input=false \
             -detailed-exitcode \
             2>&1 | tee plan_output.txt
+          rc=${PIPESTATUS[0]}
+          echo "exitcode=${rc}" >> "$GITHUB_OUTPUT"
+          # -detailed-exitcode: 0 no changes, 2 changes present, 1 error
+          [ "${rc}" -ne 1 ]
         continue-on-error: true
 
       - name: Upload plan artifact
@@ -206,10 +211,11 @@ jobs:
           create_credentials_file: true
 
       # dataset is the fdp_<env> prefix; dbt appends _staging / _marts_* / _seeds
-      # (dbt_project.yml), matching terraform/modules/bigquery.
+      # (dbt_project.yml). Terraform provisions all but the seeds dataset.
       - name: Configure dbt profile
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
           TARGET_ENV: ${{ inputs.environment }}
         run: |
           mkdir -p ~/.dbt
@@ -223,7 +229,7 @@ jobs:
                 project: ${GCP_PROJECT_ID}
                 dataset: fdp_${TARGET_ENV}
                 keyfile: ${GOOGLE_APPLICATION_CREDENTIALS}
-                location: US
+                location: ${GCP_REGION}
                 threads: 8
                 timeout_seconds: 600
                 priority: interactive
@@ -259,7 +265,7 @@ jobs:
     name: gitleaks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
