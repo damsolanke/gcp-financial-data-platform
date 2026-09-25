@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	cloud.google.com/go/bigtable v1.42.0
 	cloud.google.com/go/pubsub/v2 v2.7.0
-	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/chi/v5 v5.3.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/rs/zerolog v1.33.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
