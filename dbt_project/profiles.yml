@@ -1,8 +1,10 @@
 # Every BigQuery dataset in the platform follows fdp_<env>_<layer>.
 # The `dataset` below is the fdp_<env> prefix; dbt appends each layer's
 # custom schema from dbt_project.yml to it (fdp_dev_staging,
-# fdp_dev_marts_finance, fdp_dev_marts_analytics, fdp_dev_seeds), which is
-# exactly what terraform/modules/bigquery provisions.
+# fdp_dev_marts_finance, fdp_dev_marts_analytics, fdp_dev_seeds).
+# terraform/modules/bigquery provisions all of them except the seeds dataset,
+# which has to exist before `dbt seed`. Jobs run in the datasets' region
+# (Terraform var.region, us-central1 by default), not the US multi-region.
 financial_data_platform:
   target: dev
   outputs:
@@ -12,7 +14,7 @@ financial_data_platform:
       project: "{{ env_var('GCP_PROJECT_ID') }}"
       dataset: "{{ env_var('BQ_DATASET', 'fdp_dev') }}"
       keyfile: "{{ env_var('GCP_KEYFILE_PATH') }}"
-      location: US
+      location: "{{ env_var('GCP_REGION', 'us-central1') }}"
       threads: 4
       timeout_seconds: 300
       priority: interactive
@@ -24,7 +26,7 @@ financial_data_platform:
       project: "{{ env_var('GCP_PROJECT_ID') }}"
       dataset: "{{ env_var('BQ_DATASET', 'fdp_staging') }}"
       keyfile: "{{ env_var('GCP_KEYFILE_PATH') }}"
-      location: US
+      location: "{{ env_var('GCP_REGION', 'us-central1') }}"
       threads: 8
       timeout_seconds: 600
       priority: interactive
@@ -36,7 +38,7 @@ financial_data_platform:
       project: "{{ env_var('GCP_PROJECT_ID') }}"
       dataset: "{{ env_var('BQ_DATASET', 'fdp_prod') }}"
       keyfile: "{{ env_var('GCP_KEYFILE_PATH') }}"
-      location: US
+      location: "{{ env_var('GCP_REGION', 'us-central1') }}"
       threads: 16
       timeout_seconds: 900
       priority: batch
