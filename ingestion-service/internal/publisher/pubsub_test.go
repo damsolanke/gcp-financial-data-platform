@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub/v2"
+	"cloud.google.com/go/pubsub/v2/apiv1/pubsubpb"
 )
 
 const (
@@ -23,8 +24,32 @@ func skipIfNoEmulator(t *testing.T) {
 	}
 }
 
+// createTopic creates a topic through the v2 admin client and returns its full name.
+func createTopic(ctx context.Context, t *testing.T, client *pubsub.Client, id string) string {
+	t.Helper()
+	name := "projects/" + testProjectID + "/topics/" + id
+	if _, err := client.TopicAdminClient.CreateTopic(ctx, &pubsubpb.Topic{Name: name}); err != nil {
+		t.Fatalf("creating topic %s: %v", id, err)
+	}
+	return name
+}
+
+// createSubscriber creates a subscription on topic and returns a subscriber for it.
+func createSubscriber(ctx context.Context, t *testing.T, client *pubsub.Client, id, topic string) *pubsub.Subscriber {
+	t.Helper()
+	name := "projects/" + testProjectID + "/subscriptions/" + id
+	if _, err := client.SubscriptionAdminClient.CreateSubscription(ctx, &pubsubpb.Subscription{
+		Name:               name,
+		Topic:              topic,
+		AckDeadlineSeconds: 10,
+	}); err != nil {
+		t.Fatalf("creating subscription %s: %v", id, err)
+	}
+	return client.Subscriber(name)
+}
+
 // createTestTopicsAndSubs sets up topics and subscriptions for testing.
-func createTestTopicsAndSubs(ctx context.Context, t *testing.T) (*pubsub.Client, *pubsub.Subscription, *pubsub.Subscription) {
+func createTestTopicsAndSubs(ctx context.Context, t *testing.T) (*pubsub.Client, *pubsub.Subscriber, *pubsub.Subscriber) {
 	t.Helper()
 
 	client, err := pubsub.NewClient(ctx, testProjectID)
@@ -32,32 +57,10 @@ func createTestTopicsAndSubs(ctx context.Context, t *testing.T) (*pubsub.Client,
 		t.Fatalf("creating pubsub client: %v", err)
 	}
 
-	validatedTopic, err := client.CreateTopic(ctx, testTopicValidated)
-	if err != nil {
-		t.Fatalf("creating validated topic: %v", err)
-	}
-
-	dlqTopic, err := client.CreateTopic(ctx, testTopicDLQ)
-	if err != nil {
-		t.Fatalf("creating DLQ topic: %v", err)
-	}
-
-	validatedSub, err := client.CreateSubscription(ctx, "validated-sub", pubsub.SubscriptionConfig{
-		Topic:       validatedTopic,
-		AckDeadline: 10 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("creating validated subscription: %v", err)
-	}
-
-	dlqSub, err := client.CreateSubscription(ctx, "dlq-sub", pubsub.SubscriptionConfig{
-		Topic:       dlqTopic,
-		AckDeadline: 10 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("creating DLQ subscription: %v", err)
-	}
-
+	validatedTopic := createTopic(ctx, t, client, testTopicValidated)
+	dlqTopic := createTopic(ctx, t, client, testTopicDLQ)
+	validatedSub := createSubscriber(ctx, t, client, "validated-sub", validatedTopic)
+	dlqSub := createSubscriber(ctx, t, client, "dlq-sub", dlqTopic)
 	return client, validatedSub, dlqSub
 }
 
@@ -127,25 +130,13 @@ func TestPubSubPublisher_PublishDLQ(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	dlqTopic, err := client.CreateTopic(ctx, dlqTopicName)
-	if err != nil {
-		t.Fatalf("creating DLQ topic: %v", err)
-	}
+	dlqTopic := createTopic(ctx, t, client, dlqTopicName)
 
 	// Also create the validated topic for the publisher constructor.
 	validatedTopicName := "validated-events-test2"
-	_, err = client.CreateTopic(ctx, validatedTopicName)
-	if err != nil {
-		t.Fatalf("creating validated topic: %v", err)
-	}
+	createTopic(ctx, t, client, validatedTopicName)
 
-	dlqSub, err := client.CreateSubscription(ctx, dlqSubName, pubsub.SubscriptionConfig{
-		Topic:       dlqTopic,
-		AckDeadline: 10 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("creating DLQ subscription: %v", err)
-	}
+	dlqSub := createSubscriber(ctx, t, client, dlqSubName, dlqTopic)
 
 	publisher, err := NewPubSubPublisher(ctx, testProjectID, validatedTopicName, dlqTopicName)
 	if err != nil {
@@ -210,22 +201,9 @@ func TestPubSubPublisher_StopFlushes(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	validatedTopic, err := client.CreateTopic(ctx, stopValidatedTopic)
-	if err != nil {
-		t.Fatalf("creating topic: %v", err)
-	}
-	_, err = client.CreateTopic(ctx, stopDLQTopic)
-	if err != nil {
-		t.Fatalf("creating DLQ topic: %v", err)
-	}
-
-	sub, err := client.CreateSubscription(ctx, stopSubName, pubsub.SubscriptionConfig{
-		Topic:       validatedTopic,
-		AckDeadline: 10 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("creating subscription: %v", err)
-	}
+	validatedTopic := createTopic(ctx, t, client, stopValidatedTopic)
+	createTopic(ctx, t, client, stopDLQTopic)
+	sub := createSubscriber(ctx, t, client, stopSubName, validatedTopic)
 
 	publisher, err := NewPubSubPublisher(ctx, testProjectID, stopValidatedTopic, stopDLQTopic)
 	if err != nil {
