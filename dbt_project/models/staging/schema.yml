@@ -8,7 +8,7 @@ sources:
       Rows are the event payloads exactly as the ingestion service published
       them (schemas/*.json) plus an ingestion_timestamp.
     database: "{{ env_var('GCP_PROJECT_ID', target.database) }}"
-    schema: "{{ env_var('BQ_RAW_DATASET', target.schema ~ '_raw') }}"
+    schema: "{{ env_var('BQ_DATASET_RAW', target.schema ~ '_raw') }}"
     loader: airflow_financial_pipeline_daily
     loaded_at_field: ingestion_timestamp
     freshness:

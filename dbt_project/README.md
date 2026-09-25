@@ -31,7 +31,7 @@ Set the following environment variables before running:
 ```bash
 export GCP_PROJECT_ID="your-gcp-project-id"
 export BQ_DATASET="fdp_dev"                # fdp_<env> prefix; dbt appends _staging, _marts_finance, ...
-export BQ_RAW_DATASET="fdp_dev_raw"        # landing tables written by the Airflow DAG (default: ${BQ_DATASET}_raw)
+export BQ_DATASET_RAW="fdp_dev_raw"        # landing tables written by the Airflow DAG (default: ${BQ_DATASET}_raw)
 export GCP_KEYFILE_PATH="/path/to/service-account-key.json"
 ```
 
