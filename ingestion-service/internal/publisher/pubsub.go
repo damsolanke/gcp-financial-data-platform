@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub/v2"
 )
 
 // EventPublisher defines the interface for publishing validated and failed events.
@@ -21,8 +21,8 @@ type EventPublisher interface {
 // PubSubPublisher implements EventPublisher using Google Cloud Pub/Sub.
 type PubSubPublisher struct {
 	client         *pubsub.Client
-	topicValidated *pubsub.Topic
-	topicDLQ       *pubsub.Topic
+	topicValidated *pubsub.Publisher
+	topicDLQ       *pubsub.Publisher
 }
 
 // NewPubSubPublisher creates a new PubSubPublisher connected to the given project
@@ -33,14 +33,14 @@ func NewPubSubPublisher(ctx context.Context, projectID, topicValidated, topicDLQ
 		return nil, fmt.Errorf("creating pubsub client: %w", err)
 	}
 
-	validated := client.Topic(topicValidated)
+	validated := client.Publisher(topicValidated)
 	validated.PublishSettings = pubsub.PublishSettings{
 		ByteThreshold:  1_000_000, // 1 MB
 		CountThreshold: 100,
 		DelayThreshold: 100 * time.Millisecond,
 	}
 
-	dlq := client.Topic(topicDLQ)
+	dlq := client.Publisher(topicDLQ)
 	dlq.PublishSettings = pubsub.PublishSettings{
 		ByteThreshold:  1_000_000,
 		CountThreshold: 100,
